@@ -1,0 +1,6 @@
+{
+  "puerto": 3000,
+  "nombreRestaurante": "Mi Restaurante",
+  "moneda": "S/",
+  "diasRespaldo": 30
+}
