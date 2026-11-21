@@ -182,7 +182,7 @@ main {
   min-height: 74px; cursor: pointer; text-align: center; font-weight: 700;
 }
 .mesa-btn .n { font-size: 1.4rem; display: block; }
-.mesa-btn .s { font-size: .7rem; font-weight: 600; color: var(--suave); }
+.mesa-btn .s { display: block; font-size: .7rem; font-weight: 600; color: var(--suave); }
 .mesa-btn.ocupada { background: #fff4e5; border-color: #f5c27a; }
 .mesa-btn.lista { background: #e8f8ee; border-color: #6fcf97; }
 .mesa-btn.sel { border-color: var(--primario); background: var(--primario); color: #fff; }
@@ -257,3 +257,51 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .leyenda { display: inline-block; width: 16px; height: 16px; border-radius: 5px; border: 2px solid var(--borde); background: #fff; }
 .leyenda.ocupada { background: #fff4e5; border-color: #f5c27a; }
 .leyenda.lista { background: #e8f8ee; border-color: #6fcf97; }
+
+/* ---------- v2: guarniciones, pedido, carta, tickets, cobro ---------- */
+.guar { font-size: .85rem; color: var(--suave); margin-left: 4px; }
+.guar b { color: var(--texto); }
+.nota-item { color: #8a5300; }
+.falta { color: var(--peligro); font-weight: 600; }
+.opciones { display: flex; flex-wrap: wrap; gap: 8px; }
+.opciones .chip { white-space: normal; text-align: left; }
+.etiqueta-campo { font-size: .85rem; font-weight: 600; color: var(--suave); margin-bottom: 6px; }
+.ayuda-check { display: block; margin: -4px 0 4px 32px; }
+.total-cobro { font-size: 2rem; font-weight: 800; color: var(--primario); }
+.tiempo { font-weight: 700; font-variant-numeric: tabular-nums; }
+.tiempo.alerta { color: var(--peligro); }
+
+.pedido { border: 2px solid var(--primario-2); }
+.linea-pedido { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--borde); }
+.linea-pedido:last-child { border-bottom: 0; }
+.linea-pedido .info { flex: 1; min-width: 0; cursor: pointer; }
+.linea-pedido .nombre { font-weight: 600; }
+
+.btn-mas {
+  width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--primario); color: #fff;
+  font-size: 1.4rem; font-weight: 700; cursor: pointer; flex: none;
+}
+.btn-mas:disabled { opacity: .4; cursor: not-allowed; }
+.cuenta {
+  min-width: 30px; height: 30px; border-radius: 15px; background: var(--acento); color: #1d2433;
+  font-weight: 800; display: inline-flex; align-items: center; justify-content: center; padding: 0 8px;
+}
+
+.toggle-fila { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--borde); }
+.toggle-fila:last-child { border-bottom: 0; }
+.toggle-fila .nombre { font-weight: 600; }
+.toggle-fila [data-menu-txt] { cursor: pointer; }
+.toggle {
+  width: 40px; height: 40px; border-radius: 10px; border: 2px solid #b8c2d1; background: #fff;
+  font-size: 1.3rem; font-weight: 800; color: #fff; cursor: pointer; flex: none;
+}
+.toggle-fila.on .toggle { background: var(--ok); border-color: var(--ok); }
+.toggle-fila:not(.on) .nombre { color: var(--suave); }
+
+.ticket-prev { border-left: 5px solid var(--e-enviado_cocina); }
+.ticket-prev.impreso { border-left-color: var(--borde); opacity: .85; }
+.ticket-prev .num { font-size: 1.1rem; font-weight: 800; }
+.ticket-prev .items { margin: 8px 0; padding: 0; list-style: none; }
+.ticket-prev .items li { padding: 3px 0; }
+.ticket-prev .acciones { display: flex; gap: 8px; margin-top: 8px; }
+.ticket-prev .acciones .btn { flex: 1; }

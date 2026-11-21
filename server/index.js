@@ -5,22 +5,34 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const express = require('express');
 const { db, tx, hoy, ahora, hashPassword, verificarPassword, sembrar, respaldar } = require('./db');
+const { generarPDF, ticketCocina, comprobante } = require('./pdf');
 
 const CONFIG = Object.assign(
-  { puerto: 3000, nombreRestaurante: 'Mi Restaurante', moneda: 'S/', diasRespaldo: 30 },
+  {
+    puerto: 3000,
+    nombreRestaurante: 'Mi Restaurante',
+    moneda: 'S/',
+    diasRespaldo: 30,
+    ruc: '',
+    direccion: '',
+    telefono: '',
+    pieComprobante: '¡Gracias por su preferencia!',
+    avisoComprobante: 'Comprobante interno. No reemplaza a la boleta o factura electrónica.',
+  },
   JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'))
 );
 const PUERTO = Number(process.env.PORT || CONFIG.puerto);
 
 const ROLES = ['admin', 'mozo', 'caja', 'cocina'];
-const ESTADOS = ['generado', 'enviado_cocina', 'en_proceso', 'esperando_entrega', 'entregado', 'cancelado'];
-// Transiciones permitidas: estado actual -> { nuevo estado: roles que pueden hacerlo }
-// (el admin puede forzar cualquier cambio)
+const ESTADOS = ['generado', 'enviado_cocina', 'entregado', 'cancelado'];
+const EN_COCINA = ['enviado_cocina', 'en_proceso', 'esperando_entrega']; // los dos últimos: datos antiguos
+const METODOS_PAGO = ['Efectivo', 'Yape', 'Plin', 'Tarjeta', 'Transferencia', 'Otro'];
+// Transiciones permitidas: estado actual -> { nuevo estado: roles } (el admin puede forzar cualquiera)
 const TRANSICIONES = {
   generado: { enviado_cocina: ['mozo', 'caja'], cancelado: ['mozo', 'caja'] },
-  enviado_cocina: { en_proceso: ['cocina'], cancelado: ['caja'] },
-  en_proceso: { esperando_entrega: ['cocina'], enviado_cocina: ['cocina'] },
-  esperando_entrega: { entregado: ['mozo', 'caja'], en_proceso: ['cocina'] },
+  enviado_cocina: { entregado: ['mozo', 'caja'], cancelado: ['caja'] },
+  en_proceso: { entregado: ['mozo', 'caja'], cancelado: ['caja'] },
+  esperando_entrega: { entregado: ['mozo', 'caja'], cancelado: ['caja'] },
   entregado: {},
   cancelado: {},
 };
@@ -41,7 +53,8 @@ const fail = (status, msg) => {
 const ruta = (fn) => (req, res, next) => {
   try {
     const r = fn(req, res);
-    if (r !== undefined) res.json(r);
+    if (r && typeof r.then === 'function') r.then((v) => v !== undefined && res.json(v)).catch(next);
+    else if (r !== undefined) res.json(r);
   } catch (e) {
     next(e);
   }
@@ -49,6 +62,9 @@ const ruta = (fn) => (req, res, next) => {
 const esFecha = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 const bool = (v) => (v === true || v === 1 || v === '1' || v === 'true' ? 1 : 0);
 const texto = (v, max = 200) => String(v ?? '').trim().slice(0, max);
+const redondear = (n) => Math.round(n * 100) / 100;
+const listaIds = (v) =>
+  [...new Set((Array.isArray(v) ? v : String(v ?? '').split(',')).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
 
 function leerCookie(req, nombre) {
   const c = req.headers.cookie || '';
@@ -97,9 +113,7 @@ function abrirTurno(usuarioId) {
   return db.prepare('SELECT * FROM turnos WHERE id = ?').get(id);
 }
 function turnoActual(usuarioId) {
-  return db
-    .prepare('SELECT * FROM turnos WHERE usuario_id = ? AND fin IS NULL AND fecha = ?')
-    .get(usuarioId, hoy()) || null;
+  return db.prepare('SELECT * FROM turnos WHERE usuario_id = ? AND fin IS NULL AND fecha = ?').get(usuarioId, hoy()) || null;
 }
 
 app.post(
@@ -112,16 +126,20 @@ app.post(
     db.prepare('INSERT INTO sesiones (token, usuario_id, creado_en) VALUES (?,?,?)').run(token, u.id, ahora());
     const turno = abrirTurno(u.id);
     emitir('turnos');
-    res.setHeader(
-      'Set-Cookie',
-      `token=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`
-    );
+    res.setHeader('Set-Cookie', `token=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`);
     return { id: u.id, nombre: u.nombre, usuario: u.usuario, rol: u.rol, turno };
   })
 );
 
 app.get('/api/config', (req, res) =>
-  res.json({ nombreRestaurante: CONFIG.nombreRestaurante, moneda: CONFIG.moneda, estados: ESTADOS, ahora: ahora(), hoy: hoy() })
+  res.json({
+    nombreRestaurante: CONFIG.nombreRestaurante,
+    moneda: CONFIG.moneda,
+    estados: ESTADOS,
+    metodosPago: METODOS_PAGO,
+    ahora: ahora(),
+    hoy: hoy(),
+  })
 );
 
 app.use('/api', auth);
@@ -191,9 +209,8 @@ function validarUsuario(b, nuevo) {
   if (!nuevo && b.password && String(b.password).length < 4) fail(400, 'La contraseña debe tener al menos 4 caracteres');
   return { nombre, usuario, rol: b.rol, activo: b.activo === undefined ? 1 : bool(b.activo) };
 }
-function existeUsuario(usuario, exceptoId = 0) {
-  return db.prepare('SELECT 1 FROM usuarios WHERE usuario = ? AND id <> ?').get(usuario, exceptoId);
-}
+const existeUsuario = (usuario, exceptoId = 0) =>
+  db.prepare('SELECT 1 FROM usuarios WHERE usuario = ? AND id <> ?').get(usuario, exceptoId);
 
 app.post(
   '/api/usuarios',
@@ -213,8 +230,7 @@ app.put(
   rol('admin'),
   ruta((req) => {
     const id = Number(req.params.id);
-    const actual = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(id);
-    if (!actual) fail(404, 'Usuario no encontrado');
+    if (!db.prepare('SELECT 1 FROM usuarios WHERE id = ?').get(id)) fail(404, 'Usuario no encontrado');
     const u = validarUsuario(req.body, false);
     if (existeUsuario(u.usuario, id)) fail(409, 'Ese nombre de usuario ya existe');
     if (id === req.user.id && (u.rol !== 'admin' || !u.activo)) fail(400, 'No puede quitarse el rol de admin ni desactivarse a sí mismo');
@@ -235,7 +251,6 @@ app.delete(
     if (id === req.user.id) fail(400, 'No puede eliminarse a sí mismo');
     const tieneHistoria = db.prepare('SELECT 1 FROM comandas WHERE mozo_id = ? LIMIT 1').get(id);
     if (tieneHistoria) {
-      // Se conserva para no perder la historia de comandas
       db.prepare('UPDATE usuarios SET activo = 0 WHERE id = ?').run(id);
       db.prepare('DELETE FROM sesiones WHERE usuario_id = ?').run(id);
       db.prepare('UPDATE mesas SET mozo_id = NULL WHERE mozo_id = ?').run(id);
@@ -255,31 +270,25 @@ app.get(
 );
 
 // ---------------- mesas ----------------
-function listarMesas(filtroMozo) {
-  const filas = db
+function listarMesas() {
+  return db
     .prepare(
       `SELECT m.*, u.nombre AS mozo_nombre,
         (SELECT COUNT(*) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
            AND c.estado <> 'cancelado' AND c.pagada = 0) AS comandas_abiertas,
-        (SELECT COUNT(*) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
-           AND c.estado = 'esperando_entrega') AS listas
+        (SELECT COALESCE(SUM(c.total),0) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
+           AND c.estado <> 'cancelado' AND c.pagada = 0) AS por_cobrar
        FROM mesas m LEFT JOIN usuarios u ON u.id = m.mozo_id
-       ${filtroMozo ? 'WHERE m.activa = 1 AND m.mozo_id = ?' : ''}
        ORDER BY CAST(m.numero AS INTEGER), m.numero`
     )
-    .all(...[hoy(), hoy(), ...(filtroMozo ? [filtroMozo] : [])]);
-  return filas.map((m) => ({ ...m, ocupada: m.comandas_abiertas > 0 }));
+    .all(hoy(), hoy())
+    .map((m) => ({ ...m, ocupada: m.comandas_abiertas > 0 }));
 }
 
+// Todos ven todas las mesas: cualquier mozo puede atender la mesa de otro.
 app.get(
   '/api/mesas',
   ruta((req) => {
-    if (req.user.rol === 'mozo' && req.query.todas !== '1') {
-      const propias = listarMesas(req.user.id);
-      // si el mozo no tiene mesas asignadas, ve todas las activas
-      if (propias.length) return propias;
-      return listarMesas().filter((m) => m.activa);
-    }
     const todas = listarMesas();
     return req.user.rol === 'admin' ? todas : todas.filter((m) => m.activa);
   })
@@ -289,7 +298,7 @@ function validarMesa(b) {
   const numero = texto(b.numero, 20);
   if (!numero) fail(400, 'El número/nombre de mesa es obligatorio');
   const capacidad = Math.max(1, Math.min(50, parseInt(b.capacidad, 10) || 4));
-  let mozo_id = b.mozo_id ? Number(b.mozo_id) : null;
+  const mozo_id = b.mozo_id ? Number(b.mozo_id) : null;
   if (mozo_id && !db.prepare("SELECT 1 FROM usuarios WHERE id = ? AND rol = 'mozo'").get(mozo_id)) fail(400, 'El mozo no existe');
   return { numero, capacidad, mozo_id, activa: b.activa === undefined ? 1 : bool(b.activa) };
 }
@@ -338,44 +347,82 @@ app.delete(
   })
 );
 
-// ---------------- menú del día y extras ----------------
+// ---------------- guarniciones ----------------
+app.get(
+  '/api/guarniciones',
+  ruta(() => db.prepare('SELECT * FROM guarniciones ORDER BY activo DESC, nombre').all())
+);
+
+function validarGuarnicion(b) {
+  const nombre = texto(b.nombre, 60);
+  if (!nombre) fail(400, 'Escriba el nombre de la guarnición');
+  return { nombre, activo: b.activo === undefined ? 1 : bool(b.activo) };
+}
+
+app.post(
+  '/api/guarniciones',
+  rol('admin'),
+  ruta((req) => {
+    const g = validarGuarnicion(req.body);
+    if (db.prepare('SELECT 1 FROM guarniciones WHERE nombre = ? COLLATE NOCASE').get(g.nombre)) fail(409, 'Esa guarnición ya existe');
+    const id = db.prepare('INSERT INTO guarniciones (nombre, activo) VALUES (?,?)').run(g.nombre, g.activo).lastInsertRowid;
+    emitir('productos');
+    return db.prepare('SELECT * FROM guarniciones WHERE id = ?').get(id);
+  })
+);
+
+app.put(
+  '/api/guarniciones/:id',
+  rol('admin'),
+  ruta((req) => {
+    const id = Number(req.params.id);
+    const g = validarGuarnicion(req.body);
+    const r = db.prepare('UPDATE guarniciones SET nombre = ?, activo = ? WHERE id = ?').run(g.nombre, g.activo, id);
+    if (!r.changes) fail(404, 'Guarnición no encontrada');
+    emitir('productos');
+    return db.prepare('SELECT * FROM guarniciones WHERE id = ?').get(id);
+  })
+);
+
+app.delete(
+  '/api/guarniciones/:id',
+  rol('admin'),
+  ruta((req) => {
+    db.prepare('DELETE FROM guarniciones WHERE id = ?').run(Number(req.params.id));
+    emitir('productos');
+    return { ok: true };
+  })
+);
+
+// ---------------- platos (catálogo) ----------------
+const SQL_PRODUCTO = `SELECT p.*, g.nombre AS guarnicion_base FROM productos p
+  LEFT JOIN guarniciones g ON g.id = p.guarnicion_base_id`;
+
 app.get(
   '/api/productos',
   ruta((req) => {
-    const fecha = esFecha(req.query.fecha) ? req.query.fecha : hoy();
-    const where = [];
-    const params = [];
-    if (req.query.tipo === 'menu') {
-      where.push("tipo = 'menu' AND fecha = ?");
-      params.push(fecha);
-    } else if (req.query.tipo === 'extra') {
-      where.push("tipo = 'extra'");
-    } else {
-      // carta vigente: menú de la fecha + extras
-      where.push("((tipo = 'menu' AND fecha = ?) OR tipo = 'extra')");
-      params.push(fecha);
-    }
-    if (req.user.rol !== 'admin' || req.query.vigentes === '1') where.push('activo = 1');
-    return db
-      .prepare(`SELECT * FROM productos WHERE ${where.join(' AND ')} ORDER BY tipo DESC, categoria, nombre`)
-      .all(...params);
+    const where = req.user.rol === 'admin' ? '1=1' : 'p.activo = 1';
+    return db.prepare(`${SQL_PRODUCTO} WHERE ${where} ORDER BY p.tipo DESC, p.categoria, p.nombre`).all();
   })
 );
 
 function validarProducto(b) {
   const nombre = texto(b.nombre, 120);
   if (!nombre) fail(400, 'El nombre es obligatorio');
-  const tipo = b.tipo === 'menu' ? 'menu' : b.tipo === 'extra' ? 'extra' : fail(400, 'Tipo inválido');
+  const tipo = b.tipo === 'menu' ? 'menu' : b.tipo === 'extra' ? 'extra' : fail(400, 'Indique si es menú o extra');
   const precio = Number(b.precio);
-  if (!Number.isFinite(precio) || precio < 0) fail(400, 'Precio inválido');
-  const fecha = tipo === 'menu' ? (esFecha(b.fecha) ? b.fecha : hoy()) : null;
+  if (b.precio === '' || !Number.isFinite(precio) || precio < 0) fail(400, 'Precio inválido');
+  let guarnicion_base_id = b.guarnicion_base_id ? Number(b.guarnicion_base_id) : null;
+  if (guarnicion_base_id && !db.prepare('SELECT 1 FROM guarniciones WHERE id = ?').get(guarnicion_base_id))
+    fail(400, 'La guarnición elegida no existe');
   const p = {
     nombre,
     descripcion: texto(b.descripcion, 300),
-    categoria: texto(b.categoria, 40),
-    precio: Math.round(precio * 100) / 100,
+    categoria: texto(b.categoria, 40) || (tipo === 'menu' ? 'Menú' : 'Otros'),
+    precio: redondear(precio),
     tipo,
-    fecha,
+    guarnicion_base_id,
+    con_eleccion: bool(b.con_eleccion),
     para_local: b.para_local === undefined ? 1 : bool(b.para_local),
     para_llevar: b.para_llevar === undefined ? 1 : bool(b.para_llevar),
     disponible: b.disponible === undefined ? 1 : bool(b.disponible),
@@ -384,21 +431,25 @@ function validarProducto(b) {
   if (!p.para_local && !p.para_llevar) fail(400, 'Debe estar disponible para mesa y/o para llevar');
   return p;
 }
+const COLS_P = 'nombre, descripcion, categoria, precio, tipo, guarnicion_base_id, con_eleccion, para_local, para_llevar, disponible, activo';
+const valoresP = (p) => [p.nombre, p.descripcion, p.categoria, p.precio, p.tipo, p.guarnicion_base_id, p.con_eleccion, p.para_local, p.para_llevar, p.disponible, p.activo];
 
 app.post(
   '/api/productos',
   rol('admin'),
   ruta((req) => {
     const p = validarProducto(req.body);
-    const id = db
-      .prepare(
-        `INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, fecha, para_local, para_llevar, disponible, activo)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run(p.nombre, p.descripcion, p.categoria, p.precio, p.tipo, p.fecha, p.para_local, p.para_llevar, p.disponible, p.activo)
-      .lastInsertRowid;
+    const id = tx(() => {
+      const nuevo = db.prepare(`INSERT INTO productos (${COLS_P}) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(...valoresP(p)).lastInsertRowid;
+      // un plato de menú creado se agrega al menú de la fecha indicada (por defecto, hoy)
+      if (p.tipo === 'menu' && req.body.agregar_a_fecha !== false) {
+        const fecha = esFecha(req.body.agregar_a_fecha) ? req.body.agregar_a_fecha : hoy();
+        db.prepare('INSERT OR IGNORE INTO menu_dia (fecha, producto_id) VALUES (?,?)').run(fecha, nuevo);
+      }
+      return nuevo;
+    });
     emitir('productos');
-    return db.prepare('SELECT * FROM productos WHERE id = ?').get(id);
+    return db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`).get(id);
   })
 );
 
@@ -407,27 +458,24 @@ app.put(
   rol('admin'),
   ruta((req) => {
     const id = Number(req.params.id);
-    if (!db.prepare('SELECT 1 FROM productos WHERE id = ?').get(id)) fail(404, 'Producto no encontrado');
+    if (!db.prepare('SELECT 1 FROM productos WHERE id = ?').get(id)) fail(404, 'Plato no encontrado');
     const p = validarProducto(req.body);
-    db.prepare(
-      `UPDATE productos SET nombre=?, descripcion=?, categoria=?, precio=?, tipo=?, fecha=?, para_local=?, para_llevar=?, disponible=?, activo=?
-       WHERE id=?`
-    ).run(p.nombre, p.descripcion, p.categoria, p.precio, p.tipo, p.fecha, p.para_local, p.para_llevar, p.disponible, p.activo, id);
+    db.prepare(`UPDATE productos SET ${COLS_P.split(', ').map((c) => `${c}=?`).join(', ')} WHERE id = ?`).run(...valoresP(p), id);
     emitir('productos');
-    return db.prepare('SELECT * FROM productos WHERE id = ?').get(id);
+    return db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`).get(id);
   })
 );
 
-// Marcar agotado / disponible (admin y cocina)
+// Marcar agotado / disponible
 app.post(
   '/api/productos/:id/disponible',
-  rol('admin', 'cocina'),
+  rol('admin', 'cocina', 'caja'),
   ruta((req) => {
     const id = Number(req.params.id);
     const r = db.prepare('UPDATE productos SET disponible = ? WHERE id = ?').run(bool(req.body.disponible), id);
-    if (!r.changes) fail(404, 'Producto no encontrado');
+    if (!r.changes) fail(404, 'Plato no encontrado');
     emitir('productos');
-    return db.prepare('SELECT * FROM productos WHERE id = ?').get(id);
+    return db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`).get(id);
   })
 );
 
@@ -447,33 +495,95 @@ app.delete(
   })
 );
 
-// Copia el menú de un día a otro (para armar rápido el menú diario)
+// ---------------- carta del día ----------------
+function cartaDelDia(fecha, completo) {
+  const enMenu = new Set(db.prepare('SELECT producto_id FROM menu_dia WHERE fecha = ?').all(fecha).map((r) => r.producto_id));
+  const delDia = new Set(db.prepare('SELECT guarnicion_id FROM guarniciones_dia WHERE fecha = ?').all(fecha).map((r) => r.guarnicion_id));
+  const productos = db
+    .prepare(`${SQL_PRODUCTO} WHERE ${completo ? '1=1' : 'p.activo = 1'} ORDER BY p.categoria, p.nombre`)
+    .all()
+    .map((p) => ({ ...p, en_carta: p.tipo === 'extra' ? 1 : enMenu.has(p.id) ? 1 : 0 }));
+  const guarniciones = db
+    .prepare(`SELECT * FROM guarniciones WHERE ${completo ? '1=1' : 'activo = 1'} ORDER BY nombre`)
+    .all()
+    .map((g) => ({ ...g, del_dia: delDia.has(g.id) ? 1 : 0 }));
+  return {
+    fecha,
+    menu: productos.filter((p) => p.tipo === 'menu' && (completo || p.en_carta)),
+    extras: productos.filter((p) => p.tipo === 'extra'),
+    guarniciones,
+  };
+}
+
+app.get(
+  '/api/carta',
+  ruta((req) => {
+    const fecha = esFecha(req.query.fecha) ? req.query.fecha : hoy();
+    return cartaDelDia(fecha, req.user.rol === 'admin' && req.query.completo === '1');
+  })
+);
+
+// Incluir o quitar un plato del menú del día
 app.post(
-  '/api/productos/copiar-menu',
+  '/api/carta/menu',
+  rol('admin'),
+  ruta((req) => {
+    const fecha = esFecha(req.body.fecha) ? req.body.fecha : hoy();
+    const id = Number(req.body.producto_id);
+    if (!db.prepare("SELECT 1 FROM productos WHERE id = ? AND tipo = 'menu'").get(id)) fail(404, 'Plato de menú no encontrado');
+    if (bool(req.body.incluir)) db.prepare('INSERT OR IGNORE INTO menu_dia (fecha, producto_id) VALUES (?,?)').run(fecha, id);
+    else db.prepare('DELETE FROM menu_dia WHERE fecha = ? AND producto_id = ?').run(fecha, id);
+    emitir('productos');
+    return { ok: true };
+  })
+);
+
+// Incluir o quitar una guarnición "a elección" del día
+app.post(
+  '/api/carta/guarnicion',
+  rol('admin'),
+  ruta((req) => {
+    const fecha = esFecha(req.body.fecha) ? req.body.fecha : hoy();
+    const id = Number(req.body.guarnicion_id);
+    if (!db.prepare('SELECT 1 FROM guarniciones WHERE id = ?').get(id)) fail(404, 'Guarnición no encontrada');
+    if (bool(req.body.incluir)) db.prepare('INSERT OR IGNORE INTO guarniciones_dia (fecha, guarnicion_id) VALUES (?,?)').run(fecha, id);
+    else db.prepare('DELETE FROM guarniciones_dia WHERE fecha = ? AND guarnicion_id = ?').run(fecha, id);
+    emitir('productos');
+    return { ok: true };
+  })
+);
+
+// Copia la carta (menú + guarniciones a elección) de un día a otro
+app.post(
+  '/api/carta/copiar',
   rol('admin'),
   ruta((req) => {
     const { desde, hasta } = req.body;
     if (!esFecha(desde) || !esFecha(hasta) || desde === hasta) fail(400, 'Fechas inválidas');
-    const origen = db.prepare("SELECT * FROM productos WHERE tipo = 'menu' AND fecha = ? AND activo = 1").all(desde);
-    if (!origen.length) fail(404, 'No hay menú registrado en la fecha de origen');
-    const ins = db.prepare(
-      `INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, fecha, para_local, para_llevar)
-       VALUES (?,?,?,?, 'menu', ?, ?, ?)`
-    );
-    tx(() => origen.forEach((p) => ins.run(p.nombre, p.descripcion, p.categoria, p.precio, hasta, p.para_local, p.para_llevar)));
+    const r = tx(() => {
+      const m = db.prepare('INSERT OR IGNORE INTO menu_dia (fecha, producto_id) SELECT ?, producto_id FROM menu_dia WHERE fecha = ?').run(hasta, desde);
+      const g = db
+        .prepare('INSERT OR IGNORE INTO guarniciones_dia (fecha, guarnicion_id) SELECT ?, guarnicion_id FROM guarniciones_dia WHERE fecha = ?')
+        .run(hasta, desde);
+      return m.changes + g.changes;
+    });
+    if (!r && !db.prepare('SELECT 1 FROM menu_dia WHERE fecha = ? UNION SELECT 1 FROM guarniciones_dia WHERE fecha = ?').get(desde, desde))
+      fail(404, 'Ese día no tiene carta registrada');
     emitir('productos');
-    return { ok: true, copiados: origen.length };
+    return { ok: true, copiados: r };
   })
 );
 
 // ---------------- comandas ----------------
 const SQL_COMANDA = `
   SELECT c.*, m.numero AS mesa_numero, u.nombre AS mozo_nombre, m.mozo_id AS mesa_mozo_id,
+    co.metodo AS metodo_pago,
     (SELECT h.fecha FROM comanda_historial h WHERE h.comanda_id = c.id AND h.estado = 'enviado_cocina'
        ORDER BY h.id DESC LIMIT 1) AS enviado_en
   FROM comandas c
   LEFT JOIN mesas m ON m.id = c.mesa_id
-  LEFT JOIN usuarios u ON u.id = c.mozo_id`;
+  LEFT JOIN usuarios u ON u.id = c.mozo_id
+  LEFT JOIN cobros co ON co.id = c.cobro_id`;
 
 function adjuntarItems(comandas) {
   if (!comandas.length) return comandas;
@@ -486,26 +596,29 @@ function adjuntarItems(comandas) {
   return comandas.map((c) => ({ ...c, items: porComanda.get(c.id) }));
 }
 
+function obtenerComandas(ids) {
+  if (!ids.length) return [];
+  const filas = db.prepare(`${SQL_COMANDA} WHERE c.id IN (${ids.map(() => '?').join(',')}) ORDER BY c.id`).all(...ids);
+  return adjuntarItems(filas);
+}
+
 function obtenerComanda(id, conHistorial = false) {
-  const c = db.prepare(`${SQL_COMANDA} WHERE c.id = ?`).get(id);
+  const [c] = obtenerComandas([id]);
   if (!c) return null;
-  const [conItems] = adjuntarItems([c]);
   if (conHistorial) {
-    conItems.historial = db
+    c.historial = db
       .prepare(
         `SELECT h.estado, h.fecha, u.nombre AS usuario FROM comanda_historial h
          LEFT JOIN usuarios u ON u.id = h.usuario_id WHERE h.comanda_id = ? ORDER BY h.id`
       )
       .all(id);
   }
-  return conItems;
+  return c;
 }
 
 function puedeVer(user, c) {
-  if (user.rol === 'admin' || user.rol === 'caja') return true;
-  if (user.rol === 'mozo') return c.mozo_id === user.id || c.mesa_mozo_id === user.id;
   if (user.rol === 'cocina') return c.estado !== 'generado';
-  return false;
+  return true; // admin, caja y cualquier mozo
 }
 
 function comandaVisible(req) {
@@ -514,22 +627,25 @@ function comandaVisible(req) {
   return c;
 }
 
+const SQL_EN_COCINA = `c.estado IN (${EN_COCINA.map((e) => `'${e}'`).join(',')})`;
+
 app.get(
   '/api/comandas',
   ruta((req) => {
     const fecha = esFecha(req.query.fecha) ? req.query.fecha : hoy();
     const where = ['c.fecha = ?'];
     const params = [fecha];
-    if (req.user.rol === 'mozo') {
+    const vista = req.user.rol === 'cocina' ? 'cocina' : req.query.vista;
+    if (vista === 'cocina') where.push(SQL_EN_COCINA);
+    else if (vista === 'activas') where.push("c.estado NOT IN ('entregado','cancelado')");
+    else if (vista === 'por_cobrar') where.push("c.estado <> 'cancelado' AND c.pagada = 0");
+    if (req.query.mias === '1') {
       where.push('(c.mozo_id = ? OR m.mozo_id = ?)');
       params.push(req.user.id, req.user.id);
     }
-    if (req.user.rol === 'cocina' || req.query.vista === 'cocina') {
-      where.push("c.estado IN ('enviado_cocina','en_proceso','esperando_entrega')");
-    } else if (req.query.vista === 'activas') {
-      where.push("c.estado NOT IN ('entregado','cancelado')");
-    } else if (req.query.vista === 'por_cobrar') {
-      where.push("c.estado <> 'cancelado' AND c.pagada = 0");
+    if (req.query.mesa_id) {
+      where.push('c.mesa_id = ?');
+      params.push(Number(req.query.mesa_id));
     }
     const filas = db.prepare(`${SQL_COMANDA} WHERE ${where.join(' AND ')} ORDER BY c.id DESC`).all(...params);
     return adjuntarItems(filas);
@@ -538,27 +654,59 @@ app.get(
 
 app.get('/api/comandas/:id', ruta((req) => comandaVisible(req)));
 
-// Valida y arma los ítems a partir de la carta vigente
+// Valida los ítems y toma nombres/precios del catálogo
 function prepararItems(itemsBody, tipo) {
   if (!Array.isArray(itemsBody) || !itemsBody.length) fail(400, 'Agregue al menos un plato');
-  const getP = db.prepare('SELECT * FROM productos WHERE id = ?');
+  const getP = db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`);
+  const getG = db.prepare('SELECT * FROM guarniciones WHERE id = ?');
   return itemsBody.map((it) => {
     const p = getP.get(Number(it.producto_id));
     if (!p || !p.activo) fail(400, 'Uno de los platos ya no existe');
     if (tipo === 'local' && !p.para_local) fail(400, `"${p.nombre}" no está disponible para mesa`);
     if (tipo === 'llevar' && !p.para_llevar) fail(400, `"${p.nombre}" no está disponible para llevar`);
     const cantidad = Math.max(1, Math.min(99, parseInt(it.cantidad, 10) || 1));
-    return { producto_id: p.id, nombre: p.nombre, tipo: p.tipo, precio: p.precio, cantidad, nota: texto(it.nota, 150), disponible: p.disponible, p };
+
+    // Guarnición base: la del plato, salvo que se cambie por otra o se quite (null)
+    let base = { id: null, nombre: '' };
+    const defecto = p.guarnicion_base || '';
+    if (p.guarnicion_base_id) {
+      if (it.guarnicion_base_id === undefined) base = { id: p.guarnicion_base_id, nombre: defecto };
+      else if (it.guarnicion_base_id) {
+        const g = getG.get(Number(it.guarnicion_base_id));
+        if (!g) fail(400, `Guarnición inválida en "${p.nombre}"`);
+        base = { id: g.id, nombre: g.nombre };
+      }
+    }
+    // Guarnición a elección (solo si el plato la lleva)
+    let eleccion = { id: null, nombre: '' };
+    if (p.con_eleccion && it.guarnicion_eleccion_id) {
+      const g = getG.get(Number(it.guarnicion_eleccion_id));
+      if (!g) fail(400, `Guarnición inválida en "${p.nombre}"`);
+      eleccion = { id: g.id, nombre: g.nombre };
+    }
+    return {
+      producto_id: p.id,
+      nombre: p.nombre,
+      tipo: p.tipo,
+      precio: p.precio,
+      cantidad,
+      nota: texto(it.nota, 150),
+      disponible: p.disponible,
+      guarnicion_base_id: base.id,
+      guarnicion_base: base.nombre,
+      guarnicion_defecto: p.guarnicion_base_id ? defecto : '',
+      guarnicion_eleccion_id: eleccion.id,
+      guarnicion_eleccion: eleccion.nombre,
+    };
   });
 }
 
-function validarCabecera(req, b) {
+function validarCabecera(b) {
   const tipo = b.tipo === 'llevar' ? 'llevar' : 'local';
   let mesa_id = null;
   if (tipo === 'local') {
     mesa_id = Number(b.mesa_id);
-    const mesa = db.prepare('SELECT * FROM mesas WHERE id = ? AND activa = 1').get(mesa_id);
-    if (!mesa) fail(400, 'Seleccione una mesa válida');
+    if (!db.prepare('SELECT 1 FROM mesas WHERE id = ? AND activa = 1').get(mesa_id)) fail(400, 'Seleccione una mesa válida');
   }
   return { tipo, mesa_id, cliente: texto(b.cliente, 80), nota: texto(b.nota, 300) };
 }
@@ -566,24 +714,34 @@ function validarCabecera(req, b) {
 function guardarItems(comandaId, items) {
   db.prepare('DELETE FROM comanda_items WHERE comanda_id = ?').run(comandaId);
   const ins = db.prepare(
-    'INSERT INTO comanda_items (comanda_id, producto_id, nombre, tipo, precio, cantidad, nota) VALUES (?,?,?,?,?,?,?)'
+    `INSERT INTO comanda_items (comanda_id, producto_id, nombre, tipo, precio, cantidad, nota,
+       guarnicion_base_id, guarnicion_base, guarnicion_defecto, guarnicion_eleccion_id, guarnicion_eleccion)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   let total = 0;
   for (const it of items) {
-    ins.run(comandaId, it.producto_id, it.nombre, it.tipo, it.precio, it.cantidad, it.nota);
+    ins.run(comandaId, it.producto_id, it.nombre, it.tipo, it.precio, it.cantidad, it.nota,
+      it.guarnicion_base_id, it.guarnicion_base, it.guarnicion_defecto, it.guarnicion_eleccion_id, it.guarnicion_eleccion);
     total += it.precio * it.cantidad;
   }
-  db.prepare('UPDATE comandas SET total = ?, actualizado_en = ? WHERE id = ?').run(Math.round(total * 100) / 100, ahora(), comandaId);
+  db.prepare('UPDATE comandas SET total = ?, actualizado_en = ? WHERE id = ?').run(redondear(total), ahora(), comandaId);
 }
 
 function registrarEstado(comandaId, estado, usuarioId) {
   db.prepare('UPDATE comandas SET estado = ?, actualizado_en = ? WHERE id = ?').run(estado, ahora(), comandaId);
   db.prepare('INSERT INTO comanda_historial (comanda_id, estado, usuario_id, fecha) VALUES (?,?,?,?)').run(comandaId, estado, usuarioId, ahora());
+  // al enviarse a cocina queda pendiente de imprimir su ticket
+  if (estado === 'enviado_cocina') db.prepare('UPDATE comandas SET ticket_impreso = 0 WHERE id = ?').run(comandaId);
 }
 
 function notificarComanda(id, accion) {
   const c = db.prepare(`${SQL_COMANDA} WHERE c.id = ?`).get(id);
-  emitir('comandas', c ? { accion, id, numero: c.numero_dia, estado: c.estado, mozo_id: c.mozo_id, mesa: c.mesa_numero, tipo: c.tipo } : { accion, id });
+  emitir(
+    'comandas',
+    c
+      ? { accion, id, numero: c.numero_dia, estado: c.estado, mozo_id: c.mozo_id, mesa: c.mesa_numero, tipo: c.tipo, ticket_impreso: c.ticket_impreso }
+      : { accion, id }
+  );
   emitir('mesas');
 }
 
@@ -591,7 +749,7 @@ app.post(
   '/api/comandas',
   rol('admin', 'mozo', 'caja'),
   ruta((req) => {
-    const cab = validarCabecera(req, req.body);
+    const cab = validarCabecera(req.body);
     const items = prepararItems(req.body.items, cab.tipo);
     const agotado = items.find((i) => !i.disponible);
     if (agotado) fail(400, `"${agotado.nombre}" está agotado`);
@@ -625,15 +783,16 @@ app.put(
   rol('admin', 'mozo', 'caja'),
   ruta((req) => {
     const c = comandaVisible(req);
+    if (c.pagada) fail(400, 'La comanda ya está cobrada');
     const editable = c.estado === 'generado' || (req.user.rol === 'admin' && !['entregado', 'cancelado'].includes(c.estado));
     if (!editable) fail(400, 'Solo se pueden editar comandas que aún no se enviaron a cocina');
-    const cab = validarCabecera(req, req.body);
+    const cab = validarCabecera(req.body);
     const items = prepararItems(req.body.items, cab.tipo);
     tx(() => {
-      db.prepare('UPDATE comandas SET tipo=?, mesa_id=?, cliente=?, nota=?, actualizado_en=? WHERE id=?').run(
-        cab.tipo, cab.mesa_id, cab.cliente, cab.nota, ahora(), c.id
-      );
+      db.prepare('UPDATE comandas SET tipo=?, mesa_id=?, cliente=?, nota=?, actualizado_en=? WHERE id=?').run(cab.tipo, cab.mesa_id, cab.cliente, cab.nota, ahora(), c.id);
       guardarItems(c.id, items);
+      // si ya estaba en cocina, el ticket se vuelve a imprimir marcado como modificado
+      if (EN_COCINA.includes(c.estado)) db.prepare('UPDATE comandas SET ticket_impreso = 0, ticket_modificado = 1 WHERE id = ?').run(c.id);
       if (req.body.enviar && c.estado === 'generado') registrarEstado(c.id, 'enviado_cocina', req.user.id);
     });
     notificarComanda(c.id, 'editada');
@@ -649,23 +808,10 @@ app.post(
     if (!ESTADOS.includes(nuevo)) fail(400, 'Estado inválido');
     if (nuevo === c.estado) return c;
     const permitidos = TRANSICIONES[c.estado]?.[nuevo];
-    if (req.user.rol !== 'admin' && !(permitidos && permitidos.includes(req.user.rol))) {
-      fail(403, `No puede pasar la comanda de "${c.estado}" a "${nuevo}"`);
-    }
+    if (req.user.rol !== 'admin' && !(permitidos && permitidos.includes(req.user.rol))) fail(403, 'No puede hacer ese cambio de estado');
+    if (nuevo === 'cancelado' && c.pagada) fail(400, 'Anule primero el cobro');
     tx(() => registrarEstado(c.id, nuevo, req.user.id));
     notificarComanda(c.id, 'estado');
-    return obtenerComanda(c.id, true);
-  })
-);
-
-app.post(
-  '/api/comandas/:id/pago',
-  rol('admin', 'caja'),
-  ruta((req) => {
-    const c = comandaVisible(req);
-    if (c.estado === 'cancelado') fail(400, 'La comanda está cancelada');
-    db.prepare('UPDATE comandas SET pagada = ?, actualizado_en = ? WHERE id = ?').run(bool(req.body.pagada), ahora(), c.id);
-    notificarComanda(c.id, 'pago');
     return obtenerComanda(c.id, true);
   })
 );
@@ -678,6 +824,105 @@ app.delete(
     db.prepare('DELETE FROM comandas WHERE id = ?').run(c.id);
     notificarComanda(c.id, 'eliminada');
     return { ok: true };
+  })
+);
+
+// ---------------- tickets de cocina ----------------
+function momento() {
+  const a = ahora();
+  return `${a.slice(8, 10)}/${a.slice(5, 7)} ${a.slice(11, 16)}`;
+}
+
+// PDF con un ticket por página. ?ids=1,2,3
+app.get(
+  '/api/tickets.pdf',
+  ruta(async (req, res) => {
+    const ids = listaIds(req.query.ids);
+    const comandas = obtenerComandas(ids).filter((c) => c.estado !== 'generado' || req.user.rol !== 'cocina');
+    if (!comandas.length) fail(404, 'No hay tickets para imprimir');
+    const pdf = await generarPDF(comandas.map((c) => ticketCocina(c, momento())), 'Tickets de cocina');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="tickets-${comandas.map((c) => c.numero_dia).join('-')}.pdf"`);
+    res.end(pdf);
+  })
+);
+
+app.post(
+  '/api/tickets/impresos',
+  ruta((req) => {
+    const ids = listaIds(req.body.ids);
+    if (!ids.length) fail(400, 'Sin tickets');
+    const upd = db.prepare('UPDATE comandas SET ticket_impreso = 1, ticket_modificado = 0 WHERE id = ?');
+    tx(() => ids.forEach((id) => upd.run(id)));
+    emitir('comandas', { accion: 'impreso', ids });
+    return { ok: true };
+  })
+);
+
+// ---------------- cobros y comprobante ----------------
+app.post(
+  '/api/cobros',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    const ids = listaIds(req.body.comanda_ids);
+    if (!ids.length) fail(400, 'Seleccione qué cobrar');
+    const comandas = obtenerComandas(ids);
+    if (comandas.length !== ids.length) fail(404, 'Comanda no encontrada');
+    for (const c of comandas) {
+      if (c.estado === 'cancelado') fail(400, `La comanda #${c.numero_dia} está cancelada`);
+      if (c.pagada) fail(400, `La comanda #${c.numero_dia} ya fue cobrada`);
+    }
+    const metodo = METODOS_PAGO.includes(req.body.metodo) ? req.body.metodo : fail(400, 'Elija la forma de pago');
+    const total = redondear(comandas.reduce((s, c) => s + c.total, 0));
+    let recibido = null;
+    if (metodo === 'Efectivo' && req.body.recibido !== undefined && req.body.recibido !== null && req.body.recibido !== '') {
+      recibido = redondear(Number(req.body.recibido));
+      if (!Number.isFinite(recibido) || recibido < total) fail(400, 'El monto recibido es menor al total');
+    }
+    const cobroId = tx(() => {
+      const id = db
+        .prepare('INSERT INTO cobros (fecha, total, metodo, recibido, usuario_id, creado_en) VALUES (?,?,?,?,?,?)')
+        .run(hoy(), total, metodo, recibido, req.user.id, ahora()).lastInsertRowid;
+      const upd = db.prepare('UPDATE comandas SET pagada = 1, cobro_id = ?, actualizado_en = ? WHERE id = ?');
+      ids.forEach((cid) => upd.run(id, ahora(), cid));
+      return id;
+    });
+    ids.forEach((cid) => notificarComanda(cid, 'pago'));
+    return db.prepare('SELECT * FROM cobros WHERE id = ?').get(cobroId);
+  })
+);
+
+app.post(
+  '/api/cobros/:id/anular',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    const id = Number(req.params.id);
+    const cobro = db.prepare('SELECT * FROM cobros WHERE id = ?').get(id);
+    if (!cobro || cobro.anulado) fail(404, 'Cobro no encontrado');
+    const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
+    tx(() => {
+      db.prepare('UPDATE cobros SET anulado = 1 WHERE id = ?').run(id);
+      db.prepare('UPDATE comandas SET pagada = 0, cobro_id = NULL WHERE cobro_id = ?').run(id);
+    });
+    ids.forEach((cid) => notificarComanda(cid, 'pago'));
+    return { ok: true };
+  })
+);
+
+app.get(
+  '/api/cobros/:id/comprobante.pdf',
+  rol('admin', 'caja'),
+  ruta(async (req, res) => {
+    const id = Number(req.params.id);
+    const cobro = db.prepare('SELECT * FROM cobros WHERE id = ?').get(id);
+    if (!cobro) fail(404, 'Cobro no encontrado');
+    if (cobro.anulado) fail(400, 'Este cobro fue anulado');
+    const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
+    const cajero = db.prepare('SELECT nombre FROM usuarios WHERE id = ?').get(cobro.usuario_id)?.nombre;
+    const pdf = await generarPDF([comprobante({ cobro, comandas: obtenerComandas(ids), config: CONFIG, cajero })], 'Comprobante de pago');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="comprobante-${String(id).padStart(6, '0')}.pdf"`);
+    res.end(pdf);
   })
 );
 
@@ -695,15 +940,20 @@ app.get(
           COALESCE(SUM(c.total),0) AS total_vendido,
           COALESCE(SUM(CASE WHEN c.pagada = 1 THEN c.total ELSE 0 END),0) AS total_cobrado,
           COUNT(DISTINCT c.mesa_id) AS mesas_atendidas,
-          SUM(CASE WHEN c.tipo = 'local' THEN 1 ELSE 0 END) AS en_mesa,
-          SUM(CASE WHEN c.tipo = 'llevar' THEN 1 ELSE 0 END) AS para_llevar
+          COALESCE(SUM(CASE WHEN c.tipo = 'local' THEN 1 ELSE 0 END),0) AS en_mesa,
+          COALESCE(SUM(CASE WHEN c.tipo = 'llevar' THEN 1 ELSE 0 END),0) AS para_llevar
          FROM comandas c WHERE ${validas}`
       )
       .get(fecha);
     resumen.canceladas = db.prepare("SELECT COUNT(*) AS n FROM comandas WHERE fecha = ? AND estado = 'cancelado'").get(fecha).n;
     resumen.ticket_promedio = resumen.comandas ? resumen.total_vendido / resumen.comandas : 0;
 
-    const porEstado = db.prepare('SELECT estado, COUNT(*) AS cantidad FROM comandas WHERE fecha = ? GROUP BY estado').all(fecha);
+    const porEstado = db
+      .prepare(
+        `SELECT CASE WHEN estado IN ('en_proceso','esperando_entrega') THEN 'enviado_cocina' ELSE estado END AS estado,
+           COUNT(*) AS cantidad FROM comandas WHERE fecha = ? GROUP BY 1`
+      )
+      .all(fecha);
 
     const porMozo = db
       .prepare(
@@ -730,6 +980,25 @@ app.get(
       )
       .all(fecha);
 
+    const guarniciones = db
+      .prepare(
+        `SELECT g.nombre, SUM(g.cantidad) AS cantidad FROM (
+           SELECT i.guarnicion_eleccion AS nombre, i.cantidad FROM comanda_items i JOIN comandas c ON c.id = i.comanda_id
+             WHERE ${validas} AND i.guarnicion_eleccion <> ''
+           UNION ALL
+           SELECT i.guarnicion_base AS nombre, i.cantidad FROM comanda_items i JOIN comandas c ON c.id = i.comanda_id
+             WHERE ${validas} AND i.guarnicion_base <> ''
+         ) g GROUP BY g.nombre ORDER BY cantidad DESC`
+      )
+      .all(fecha, fecha);
+
+    const pagos = db
+      .prepare(
+        `SELECT metodo, COUNT(*) AS cobros, COALESCE(SUM(total),0) AS total
+         FROM cobros WHERE fecha = ? AND anulado = 0 GROUP BY metodo ORDER BY total DESC`
+      )
+      .all(fecha);
+
     const empleados = db
       .prepare(
         `SELECT u.nombre, u.rol, MIN(t.inicio) AS inicio,
@@ -739,24 +1008,26 @@ app.get(
       )
       .all(fecha);
 
-    // Tiempo promedio en cocina (enviado -> listo), en minutos
+    // Tiempo promedio desde que se envía a cocina hasta que se entrega, en minutos
     const tiempos = db
       .prepare(
-        `SELECT AVG((julianday(l.fecha) - julianday(e.fecha)) * 1440) AS prom_cocina
+        `SELECT AVG((julianday(l.fecha) - julianday(e.fecha)) * 1440) AS prom_entrega
          FROM comandas c
          JOIN (SELECT comanda_id, MIN(fecha) AS fecha FROM comanda_historial WHERE estado = 'enviado_cocina' GROUP BY comanda_id) e ON e.comanda_id = c.id
-         JOIN (SELECT comanda_id, MAX(fecha) AS fecha FROM comanda_historial WHERE estado = 'esperando_entrega' GROUP BY comanda_id) l ON l.comanda_id = c.id
+         JOIN (SELECT comanda_id, MAX(fecha) AS fecha FROM comanda_historial WHERE estado = 'entregado' GROUP BY comanda_id) l ON l.comanda_id = c.id
          WHERE ${validas}`
       )
       .get(fecha);
 
     return {
       fecha,
-      resumen: { ...resumen, empleados_en_turno: empleados.length, tiempo_promedio_cocina: tiempos.prom_cocina },
+      resumen: { ...resumen, empleados_en_turno: empleados.length, tiempo_promedio_entrega: tiempos.prom_entrega },
       porEstado,
       porMozo,
       mesas,
       productos,
+      guarniciones,
+      pagos,
       empleados,
     };
   })

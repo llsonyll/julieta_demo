@@ -2,5 +2,10 @@
   "puerto": 3000,
   "nombreRestaurante": "Mi Restaurante",
   "moneda": "S/",
-  "diasRespaldo": 30
+  "diasRespaldo": 30,
+  "ruc": "",
+  "direccion": "",
+  "telefono": "",
+  "pieComprobante": "¡Gracias por su preferencia!",
+  "avisoComprobante": "Comprobante interno. No reemplaza a la boleta o factura electrónica."
 }
