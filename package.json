@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
-    "dev": "node --watch --disable-warning=ExperimentalWarning server/index.js"
+    "dev": "node --watch --disable-warning=ExperimentalWarning server/index.js",
+    "cargar-carta": "node --disable-warning=ExperimentalWarning scripts/cargar-carta.js"
   },
   "dependencies": {
     "express": "^5.1.0",

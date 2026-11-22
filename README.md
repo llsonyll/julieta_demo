@@ -139,8 +139,29 @@ Al iniciar por primera vez se crea la base de datos con datos de ejemplo:
 | `caja1` | `1234` | Caja |
 | `cocina1` | `1234` | Cocina |
 
-**Cambie estas contraseñas** (Gestión → Usuarios) y reemplace las mesas y platos de ejemplo
-por los suyos antes de usarlo en serio.
+**Cambie estas contraseñas** (Gestión → Usuarios) y revise las mesas de ejemplo antes de usarlo en serio.
+
+### Carta de platos tradicionales
+
+La carta inicial está en `carta/platos-tradicionales.json` (platos, precios y guarniciones).
+Una instalación nueva la carga sola. Para cargarla o actualizarla en una base de datos que ya
+está en uso (no borra nada; busca cada plato por su nombre y lo crea o actualiza):
+
+```bash
+npm run cargar-carta
+```
+
+Para además ocultar los platos que no están en el archivo (por ejemplo, los platos de ejemplo
+de versiones anteriores):
+
+```bash
+npm run cargar-carta -- --desactivar-otros
+```
+
+Los platos principales llevan **arroz** por defecto (se puede cambiar sin costo) y una
+**guarnición a elección**: papas, choclo o kapchi de habas, que están marcadas como
+"a elección habitual" y se ofrecen los días en que la Carta del día no marca otras.
+Los caldos y los platos con acompañamiento propio (cuy, merienda, panceta, chicharrón) no llevan guarnición.
 
 **Rutina diaria sugerida:**
 1. El admin entra a *Gestión → Carta del día* y pulsa *"Copiar carta del día anterior"*.

@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS mesas (
 CREATE TABLE IF NOT EXISTS guarniciones (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   nombre TEXT NOT NULL,
-  activo INTEGER NOT NULL DEFAULT 1
+  activo INTEGER NOT NULL DEFAULT 1,
+  -- se ofrece como guarnición a elección cuando el día no define otras
+  eleccion_habitual INTEGER NOT NULL DEFAULT 0
 );
 
 -- Catálogo de platos. tipo: 'menu' (sale solo los días que se elige en menu_dia)
@@ -146,6 +148,7 @@ function agregarColumna(tabla, columna, definicion) {
   const existe = db.prepare(`PRAGMA table_info(${tabla})`).all().some((c) => c.name === columna);
   if (!existe) db.exec(`ALTER TABLE ${tabla} ADD COLUMN ${columna} ${definicion}`);
 }
+agregarColumna('guarniciones', 'eleccion_habitual', 'INTEGER NOT NULL DEFAULT 0');
 agregarColumna('productos', 'guarnicion_base_id', 'INTEGER REFERENCES guarniciones(id) ON DELETE SET NULL');
 agregarColumna('productos', 'con_eleccion', 'INTEGER NOT NULL DEFAULT 0');
 agregarColumna('comandas', 'cobro_id', 'INTEGER REFERENCES cobros(id) ON DELETE SET NULL');
@@ -219,33 +222,7 @@ function sembrar() {
     const insM = db.prepare('INSERT INTO mesas (numero, capacidad, mozo_id) VALUES (?,?,?)');
     for (let i = 1; i <= 9; i++) insM.run(String(i), i % 3 === 0 ? 6 : 4, mozos[Math.floor((i - 1) / 3)]);
 
-    const insG = db.prepare('INSERT INTO guarniciones (nombre) VALUES (?)');
-    const g = {};
-    for (const nombre of ['Arroz', 'Papas fritas', 'Yuca frita', 'Ensalada fresca', 'Picante de lisas', 'Kapchi', 'Solterito']) {
-      g[nombre] = insG.run(nombre).lastInsertRowid;
-    }
-
-    const insP = db.prepare(
-      `INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, guarnicion_base_id, con_eleccion, para_local, para_llevar)
-       VALUES (?,?,?,?,?,?,?,?,?)`
-    );
-    const f = hoy();
-    const menu = [
-      insP.run('Malaya frita', '', 'Menú', 16, 'menu', g['Arroz'], 1, 1, 1).lastInsertRowid,
-      insP.run('Pollo al horno', '', 'Menú', 14, 'menu', g['Arroz'], 1, 1, 1).lastInsertRowid,
-      insP.run('Estofado de res', '', 'Menú', 15, 'menu', g['Arroz'], 1, 1, 1).lastInsertRowid,
-    ];
-    insP.run('Chicharrón de chancho', '', 'Menú', 17, 'menu', g['Papas fritas'], 1, 1, 1);
-    insP.run('Lomo saltado', '', 'Fondos', 28, 'extra', g['Arroz'], 1, 1, 1);
-    insP.run('Chuleta frita', '', 'Fondos', 24, 'extra', g['Arroz'], 1, 1, 1);
-    insP.run('Rocoto relleno', '', 'Fondos', 22, 'extra', g['Papas fritas'], 0, 1, 1);
-    insP.run('Gaseosa 500 ml', '', 'Bebidas', 5, 'extra', null, 0, 1, 1);
-    insP.run('Chicha morada (jarra)', '', 'Bebidas', 12, 'extra', null, 0, 1, 0);
-
-    const insMD = db.prepare('INSERT INTO menu_dia (fecha, producto_id) VALUES (?,?)');
-    for (const id of menu) insMD.run(f, id);
-    const insGD = db.prepare('INSERT INTO guarniciones_dia (fecha, guarnicion_id) VALUES (?,?)');
-    for (const nombre of ['Picante de lisas', 'Kapchi', 'Solterito']) insGD.run(f, g[nombre]);
+    // Los platos y guarniciones se cargan desde carta/platos-tradicionales.json (ver server/carta-inicial.js)
   });
   return true;
 }

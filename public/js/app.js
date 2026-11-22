@@ -771,7 +771,9 @@ async function vEditorComanda(main, r, esRecarga) {
   const guarniciones = carta.guarniciones; // activas
   const guarPorId = new Map(guarniciones.map((g) => [g.id, g]));
   const delDia = guarniciones.filter((g) => g.del_dia);
-  const opcionesEleccion = delDia.length ? delDia : guarniciones;
+  const habituales = guarniciones.filter((g) => g.eleccion_habitual);
+  // a elección: las marcadas para el día; si no hay, las habituales; si tampoco, todas
+  const opcionesEleccion = delDia.length ? delDia : habituales.length ? habituales : guarniciones;
 
   const b = {
     id: existente?.id || null,
@@ -905,10 +907,10 @@ async function vEditorComanda(main, r, esRecarga) {
     const ok = b.tipo === 'local' ? p.para_local : p.para_llevar;
     if (!ok) return '';
     const n = cantidadDe(p.id);
-    const sub = [
-      p.guarnicion_base ? `con ${esc(p.guarnicion_base.toLowerCase())}` : '',
-      p.con_eleccion ? '+ guarnición a elección' : '',
-    ].filter(Boolean).join(' ');
+    const sub =
+      [p.guarnicion_base ? `con ${esc(p.guarnicion_base.toLowerCase())}` : '', p.con_eleccion ? '+ guarnición a elección' : '']
+        .filter(Boolean)
+        .join(' ') || esc(p.descripcion.toLowerCase());
     return `
       <div class="producto ${!p.disponible ? 'sin-stock' : ''}" data-pid="${p.id}" data-buscar="${esc((p.nombre + ' ' + p.categoria).toLowerCase())}">
         <div class="info">
@@ -1243,11 +1245,12 @@ async function vCarta(main) {
     </div>`;
   const cats = [...new Set(carta.extras.map((p) => p.categoria || 'Otros'))];
   const delDia = carta.guarniciones.filter((g) => g.del_dia);
+  const opciones = delDia.length ? delDia : carta.guarniciones.filter((g) => g.eleccion_habitual);
   main.innerHTML = `
     <div class="pila">
       <h2>Menú de hoy</h2>
       <div class="tarjeta"><h3>🥗 Guarniciones a elección de hoy</h3>
-        <div class="opciones" style="margin-top:8px">${delDia.map((g) => `<span class="chip">${esc(g.nombre)}</span>`).join('') || '<span class="suave">No se definieron: se puede elegir cualquiera.</span>'}</div></div>
+        <div class="opciones" style="margin-top:8px">${opciones.map((g) => `<span class="chip">${esc(g.nombre)}</span>`).join('') || '<span class="suave">No se definieron: se puede elegir cualquiera.</span>'}</div></div>
       <div class="tarjeta"><h3>📅 Menú del día</h3>${carta.menu.map(fila).join('') || '<div class="suave">Sin menú cargado hoy.</div>'}</div>
       ${cats.map((c) => `<div class="tarjeta"><h3>⭐ Extras · ${esc(c)}</h3>${carta.extras.filter((p) => (p.categoria || 'Otros') === c).map(fila).join('')}</div>`).join('')}
     </div>`;
@@ -1392,7 +1395,8 @@ async function adminCarta(cont) {
       </div>
       <div class="tarjeta">
         <div class="fila entre"><h3>🥗 Guarniciones a elección (${delDia.length})</h3></div>
-        <p class="suave peq">Toque para marcar las que se ofrecen este día.</p>
+        <p class="suave peq">Toque para marcar las que se ofrecen este día. Si no marca ninguna, se ofrecen las habituales
+          (${esc(carta.guarniciones.filter((g) => g.activo && g.eleccion_habitual).map((g) => g.nombre).join(', ') || 'ninguna definida: todas')}).</p>
         <div class="opciones">${carta.guarniciones
           .filter((g) => g.activo)
           .map((g) => `<button class="chip ${g.del_dia ? 'activo' : ''}" data-guar="${g.id}" data-v="${g.del_dia ? 0 : 1}">${g.del_dia ? '✓ ' : ''}${esc(g.nombre)}</button>`)
@@ -1512,7 +1516,7 @@ async function adminGuarniciones(cont) {
       <form class="fila" id="form-guar"><input class="entrada crecer" name="nombre" placeholder="Nueva guarnición…" autocomplete="off"><button class="btn primario">Agregar</button></form>
       <div class="lista-admin">${gs
         .map(
-          (g) => `<div class="item"><div class="crecer"><b>${esc(g.nombre)}</b> ${!g.activo ? '<span class="etiqueta">INACTIVA</span>' : ''}</div>
+          (g) => `<div class="item"><div class="crecer"><b>${esc(g.nombre)}</b> ${g.eleccion_habitual ? '<span class="etiqueta pagada">A ELECCIÓN</span>' : ''} ${!g.activo ? '<span class="etiqueta">INACTIVA</span>' : ''}</div>
             <button class="btn chico" data-edit="${g.id}">✏️</button></div>`
         )
         .join('')}</div>
@@ -1534,7 +1538,11 @@ async function adminGuarniciones(cont) {
         const g = gs.find((y) => y.id === Number(x.dataset.edit));
         formulario({
           titulo: 'Editar guarnición',
-          campos: [{ n: 'nombre', l: 'Nombre', req: true }, { n: 'activo', l: 'Activa', t: 'check', def: true }],
+          campos: [
+            { n: 'nombre', l: 'Nombre', req: true },
+            { n: 'eleccion_habitual', l: 'Ofrecer a elección por defecto', t: 'check', ayuda: 'Se ofrece como guarnición a elección los días en que no se marquen otras.' },
+            { n: 'activo', l: 'Activa', t: 'check', def: true },
+          ],
           valores: g,
           enviar: (d) => api('PUT', `/api/guarniciones/${g.id}`, d),
           eliminar: async () => {
