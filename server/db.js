@@ -44,7 +44,15 @@ CREATE TABLE IF NOT EXISTS mesas (
   activa INTEGER NOT NULL DEFAULT 1
 );
 
--- tipo: 'menu' (menú del día, ligado a una fecha) o 'extra' (carta permanente)
+-- Guarniciones (arroz, papas, picante de lisas, kapchi...)
+CREATE TABLE IF NOT EXISTS guarniciones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nombre TEXT NOT NULL,
+  activo INTEGER NOT NULL DEFAULT 1
+);
+
+-- Catálogo de platos. tipo: 'menu' (sale solo los días que se elige en menu_dia)
+-- o 'extra' (carta fija). Ambos pueden llevar guarnición por defecto + guarnición a elección.
 CREATE TABLE IF NOT EXISTS productos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   nombre TEXT NOT NULL,
@@ -53,12 +61,41 @@ CREATE TABLE IF NOT EXISTS productos (
   precio REAL NOT NULL DEFAULT 0,
   tipo TEXT NOT NULL CHECK (tipo IN ('menu','extra')),
   fecha TEXT,
+  guarnicion_base_id INTEGER REFERENCES guarniciones(id) ON DELETE SET NULL,
+  con_eleccion INTEGER NOT NULL DEFAULT 0,
   para_local INTEGER NOT NULL DEFAULT 1,
   para_llevar INTEGER NOT NULL DEFAULT 1,
   disponible INTEGER NOT NULL DEFAULT 1,
   activo INTEGER NOT NULL DEFAULT 1
 );
 
+-- Qué platos de tipo 'menu' salen cada día
+CREATE TABLE IF NOT EXISTS menu_dia (
+  fecha TEXT NOT NULL,
+  producto_id INTEGER NOT NULL REFERENCES productos(id) ON DELETE CASCADE,
+  PRIMARY KEY (fecha, producto_id)
+);
+
+-- Qué guarniciones se ofrecen "a elección" cada día
+CREATE TABLE IF NOT EXISTS guarniciones_dia (
+  fecha TEXT NOT NULL,
+  guarnicion_id INTEGER NOT NULL REFERENCES guarniciones(id) ON DELETE CASCADE,
+  PRIMARY KEY (fecha, guarnicion_id)
+);
+
+CREATE TABLE IF NOT EXISTS cobros (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fecha TEXT NOT NULL,
+  total REAL NOT NULL,
+  metodo TEXT NOT NULL,
+  recibido REAL,
+  usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+  anulado INTEGER NOT NULL DEFAULT 0,
+  creado_en TEXT NOT NULL
+);
+
+-- estado 'enviado_cocina' se muestra como "En cocina".
+-- 'en_proceso' y 'esperando_entrega' quedan solo por compatibilidad con datos antiguos.
 CREATE TABLE IF NOT EXISTS comandas (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   numero_dia INTEGER NOT NULL,
@@ -72,6 +109,9 @@ CREATE TABLE IF NOT EXISTS comandas (
     CHECK (estado IN ('generado','enviado_cocina','en_proceso','esperando_entrega','entregado','cancelado')),
   total REAL NOT NULL DEFAULT 0,
   pagada INTEGER NOT NULL DEFAULT 0,
+  cobro_id INTEGER REFERENCES cobros(id) ON DELETE SET NULL,
+  ticket_impreso INTEGER NOT NULL DEFAULT 0,
+  ticket_modificado INTEGER NOT NULL DEFAULT 0,
   creado_en TEXT NOT NULL,
   actualizado_en TEXT NOT NULL
 );
@@ -84,7 +124,12 @@ CREATE TABLE IF NOT EXISTS comanda_items (
   tipo TEXT NOT NULL DEFAULT 'extra',
   precio REAL NOT NULL,
   cantidad INTEGER NOT NULL DEFAULT 1,
-  nota TEXT NOT NULL DEFAULT ''
+  nota TEXT NOT NULL DEFAULT '',
+  guarnicion_base_id INTEGER,
+  guarnicion_base TEXT NOT NULL DEFAULT '',
+  guarnicion_defecto TEXT NOT NULL DEFAULT '',
+  guarnicion_eleccion_id INTEGER,
+  guarnicion_eleccion TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS comanda_historial (
@@ -94,11 +139,32 @@ CREATE TABLE IF NOT EXISTS comanda_historial (
   usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
   fecha TEXT NOT NULL
 );
+`);
 
+// ---------- migración de bases creadas con la versión anterior ----------
+function agregarColumna(tabla, columna, definicion) {
+  const existe = db.prepare(`PRAGMA table_info(${tabla})`).all().some((c) => c.name === columna);
+  if (!existe) db.exec(`ALTER TABLE ${tabla} ADD COLUMN ${columna} ${definicion}`);
+}
+agregarColumna('productos', 'guarnicion_base_id', 'INTEGER REFERENCES guarniciones(id) ON DELETE SET NULL');
+agregarColumna('productos', 'con_eleccion', 'INTEGER NOT NULL DEFAULT 0');
+agregarColumna('comandas', 'cobro_id', 'INTEGER REFERENCES cobros(id) ON DELETE SET NULL');
+agregarColumna('comandas', 'ticket_impreso', 'INTEGER NOT NULL DEFAULT 0');
+agregarColumna('comandas', 'ticket_modificado', 'INTEGER NOT NULL DEFAULT 0');
+agregarColumna('comanda_items', 'guarnicion_base_id', 'INTEGER');
+agregarColumna('comanda_items', 'guarnicion_base', "TEXT NOT NULL DEFAULT ''");
+agregarColumna('comanda_items', 'guarnicion_defecto', "TEXT NOT NULL DEFAULT ''");
+agregarColumna('comanda_items', 'guarnicion_eleccion_id', 'INTEGER');
+agregarColumna('comanda_items', 'guarnicion_eleccion', "TEXT NOT NULL DEFAULT ''");
+// El menú antes se guardaba con su fecha en productos: se pasa a menu_dia
+db.exec(`INSERT OR IGNORE INTO menu_dia (fecha, producto_id)
+         SELECT fecha, id FROM productos WHERE tipo = 'menu' AND fecha IS NOT NULL`);
+
+db.exec(`
 CREATE INDEX IF NOT EXISTS idx_comandas_fecha ON comandas(fecha);
 CREATE INDEX IF NOT EXISTS idx_comandas_estado ON comandas(estado);
-CREATE INDEX IF NOT EXISTS idx_productos_tipo_fecha ON productos(tipo, fecha);
 CREATE INDEX IF NOT EXISTS idx_turnos_fecha ON turnos(fecha);
+CREATE INDEX IF NOT EXISTS idx_cobros_fecha ON cobros(fecha);
 `);
 
 // ---------- utilidades ----------
@@ -144,27 +210,42 @@ function sembrar() {
       'INSERT INTO usuarios (nombre, usuario, password_hash, rol, creado_en) VALUES (?,?,?,?,?)'
     );
     insU.run('Administrador', 'admin', hashPassword('admin123'), 'admin', ahora());
-    const mozo1 = insU.run('Mozo Uno', 'mozo1', hashPassword('1234'), 'mozo', ahora()).lastInsertRowid;
-    const mozo2 = insU.run('Mozo Dos', 'mozo2', hashPassword('1234'), 'mozo', ahora()).lastInsertRowid;
+    const mozos = ['Mozo Uno', 'Mozo Dos', 'Mozo Tres'].map(
+      (nombre, i) => insU.run(nombre, `mozo${i + 1}`, hashPassword('1234'), 'mozo', ahora()).lastInsertRowid
+    );
     insU.run('Caja', 'caja1', hashPassword('1234'), 'caja', ahora());
     insU.run('Cocina', 'cocina1', hashPassword('1234'), 'cocina', ahora());
 
     const insM = db.prepare('INSERT INTO mesas (numero, capacidad, mozo_id) VALUES (?,?,?)');
-    for (let i = 1; i <= 8; i++) insM.run(String(i), i % 3 === 0 ? 6 : 4, i <= 4 ? mozo1 : mozo2);
+    for (let i = 1; i <= 9; i++) insM.run(String(i), i % 3 === 0 ? 6 : 4, mozos[Math.floor((i - 1) / 3)]);
+
+    const insG = db.prepare('INSERT INTO guarniciones (nombre) VALUES (?)');
+    const g = {};
+    for (const nombre of ['Arroz', 'Papas fritas', 'Yuca frita', 'Ensalada fresca', 'Picante de lisas', 'Kapchi', 'Solterito']) {
+      g[nombre] = insG.run(nombre).lastInsertRowid;
+    }
 
     const insP = db.prepare(
-      'INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, fecha, para_local, para_llevar) VALUES (?,?,?,?,?,?,?,?)'
+      `INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, guarnicion_base_id, con_eleccion, para_local, para_llevar)
+       VALUES (?,?,?,?,?,?,?,?,?)`
     );
     const f = hoy();
-    insP.run('Menú: Sopa de casa + Ají de gallina', 'Incluye refresco', 'Menú', 15, 'menu', f, 1, 1);
-    insP.run('Menú: Crema de zapallo + Lomo saltado', 'Incluye refresco', 'Menú', 16, 'menu', f, 1, 1);
-    insP.run('Menú: Ensalada + Arroz con pollo', 'Incluye refresco', 'Menú', 14, 'menu', f, 1, 0);
-    insP.run('Ceviche clásico', '', 'Fondos', 28, 'extra', null, 1, 1);
-    insP.run('Lomo saltado', '', 'Fondos', 30, 'extra', null, 1, 1);
-    insP.run('Chicharrón de pescado', '', 'Fondos', 26, 'extra', null, 1, 1);
-    insP.run('Porción de papas fritas', '', 'Adicionales', 8, 'extra', null, 1, 1);
-    insP.run('Gaseosa 500 ml', '', 'Bebidas', 5, 'extra', null, 1, 1);
-    insP.run('Jarra de chicha morada', '', 'Bebidas', 12, 'extra', null, 1, 0);
+    const menu = [
+      insP.run('Malaya frita', '', 'Menú', 16, 'menu', g['Arroz'], 1, 1, 1).lastInsertRowid,
+      insP.run('Pollo al horno', '', 'Menú', 14, 'menu', g['Arroz'], 1, 1, 1).lastInsertRowid,
+      insP.run('Estofado de res', '', 'Menú', 15, 'menu', g['Arroz'], 1, 1, 1).lastInsertRowid,
+    ];
+    insP.run('Chicharrón de chancho', '', 'Menú', 17, 'menu', g['Papas fritas'], 1, 1, 1);
+    insP.run('Lomo saltado', '', 'Fondos', 28, 'extra', g['Arroz'], 1, 1, 1);
+    insP.run('Chuleta frita', '', 'Fondos', 24, 'extra', g['Arroz'], 1, 1, 1);
+    insP.run('Rocoto relleno', '', 'Fondos', 22, 'extra', g['Papas fritas'], 0, 1, 1);
+    insP.run('Gaseosa 500 ml', '', 'Bebidas', 5, 'extra', null, 0, 1, 1);
+    insP.run('Chicha morada (jarra)', '', 'Bebidas', 12, 'extra', null, 0, 1, 0);
+
+    const insMD = db.prepare('INSERT INTO menu_dia (fecha, producto_id) VALUES (?,?)');
+    for (const id of menu) insMD.run(f, id);
+    const insGD = db.prepare('INSERT INTO guarniciones_dia (fecha, guarnicion_id) VALUES (?,?)');
+    for (const nombre of ['Picante de lisas', 'Kapchi', 'Solterito']) insGD.run(f, g[nombre]);
   });
   return true;
 }
