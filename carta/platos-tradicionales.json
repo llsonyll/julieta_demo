@@ -1,0 +1,27 @@
+{
+  "descripcion": "Pizarra de platos tradicionales. Precios en soles (S/).",
+  "pendientes": [
+    "Chiriuchu: falta su precio; se agrega cuando se confirme."
+  ],
+  "guarniciones": [
+    { "nombre": "Arroz", "eleccion_habitual": false },
+    { "nombre": "Papas", "eleccion_habitual": true },
+    { "nombre": "Choclo", "eleccion_habitual": true },
+    { "nombre": "Kapchi de habas", "eleccion_habitual": true }
+  ],
+  "platos": [
+    { "nombre": "Cuy al horno", "categoria": "Platos tradicionales", "precio": 35, "descripcion": "Con tallarín al horno y rocoto", "guarnicion_base": null, "con_eleccion": false },
+    { "nombre": "Merienda cusqueña", "categoria": "Platos tradicionales", "precio": 35, "descripcion": "Estofado, cuy al horno, rocoto, tallarín y tortilla", "guarnicion_base": null, "con_eleccion": false },
+    { "nombre": "Panceta de cerdo al horno", "categoria": "Platos tradicionales", "precio": 30, "descripcion": "Con tallarín al horno, moraya y rocoto", "guarnicion_base": null, "con_eleccion": false },
+    { "nombre": "Costillar dorado de cordero", "categoria": "Platos tradicionales", "precio": 28, "descripcion": "", "guarnicion_base": "Arroz", "con_eleccion": true },
+    { "nombre": "Malaya frita", "categoria": "Platos tradicionales", "precio": 24, "descripcion": "", "guarnicion_base": "Arroz", "con_eleccion": true },
+    { "nombre": "Chicharrón de cerdo", "categoria": "Platos tradicionales", "precio": 25, "descripcion": "Con mote y papa dorada", "guarnicion_base": null, "con_eleccion": false },
+    { "nombre": "Milanesa de pollo", "categoria": "Platos tradicionales", "precio": 20, "descripcion": "", "guarnicion_base": "Arroz", "con_eleccion": true },
+    { "nombre": "Trucha frita", "categoria": "Platos tradicionales", "precio": 20, "descripcion": "", "guarnicion_base": "Arroz", "con_eleccion": true },
+    { "nombre": "Locro de pecho", "categoria": "Platos tradicionales", "precio": 24, "descripcion": "", "guarnicion_base": "Arroz", "con_eleccion": true },
+    { "nombre": "Gallina dorada", "categoria": "Platos tradicionales", "precio": 22, "descripcion": "", "guarnicion_base": "Arroz", "con_eleccion": true },
+    { "nombre": "Caldo de cordero", "categoria": "Caldos", "precio": 24, "descripcion": "Con papa, yuca y moraya", "guarnicion_base": null, "con_eleccion": false },
+    { "nombre": "Caldo de malaya", "categoria": "Caldos", "precio": 24, "descripcion": "Con papa, yuca y moraya", "guarnicion_base": null, "con_eleccion": false },
+    { "nombre": "Caldo de gallina", "categoria": "Caldos", "precio": 22, "descripcion": "", "guarnicion_base": null, "con_eleccion": false }
+  ]
+}

@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const express = require('express');
 const { db, tx, hoy, ahora, hashPassword, verificarPassword, sembrar, respaldar } = require('./db');
 const { generarPDF, ticketCocina, comprobante } = require('./pdf');
+const { leerCarta, cargarCarta } = require('./carta-inicial');
 
 const CONFIG = Object.assign(
   {
@@ -356,7 +357,7 @@ app.get(
 function validarGuarnicion(b) {
   const nombre = texto(b.nombre, 60);
   if (!nombre) fail(400, 'Escriba el nombre de la guarnición');
-  return { nombre, activo: b.activo === undefined ? 1 : bool(b.activo) };
+  return { nombre, activo: b.activo === undefined ? 1 : bool(b.activo), eleccion_habitual: bool(b.eleccion_habitual) };
 }
 
 app.post(
@@ -365,7 +366,9 @@ app.post(
   ruta((req) => {
     const g = validarGuarnicion(req.body);
     if (db.prepare('SELECT 1 FROM guarniciones WHERE nombre = ? COLLATE NOCASE').get(g.nombre)) fail(409, 'Esa guarnición ya existe');
-    const id = db.prepare('INSERT INTO guarniciones (nombre, activo) VALUES (?,?)').run(g.nombre, g.activo).lastInsertRowid;
+    const id = db
+      .prepare('INSERT INTO guarniciones (nombre, activo, eleccion_habitual) VALUES (?,?,?)')
+      .run(g.nombre, g.activo, g.eleccion_habitual).lastInsertRowid;
     emitir('productos');
     return db.prepare('SELECT * FROM guarniciones WHERE id = ?').get(id);
   })
@@ -377,7 +380,9 @@ app.put(
   ruta((req) => {
     const id = Number(req.params.id);
     const g = validarGuarnicion(req.body);
-    const r = db.prepare('UPDATE guarniciones SET nombre = ?, activo = ? WHERE id = ?').run(g.nombre, g.activo, id);
+    const r = db
+      .prepare('UPDATE guarniciones SET nombre = ?, activo = ?, eleccion_habitual = ? WHERE id = ?')
+      .run(g.nombre, g.activo, g.eleccion_habitual, id);
     if (!r.changes) fail(404, 'Guarnición no encontrada');
     emitir('productos');
     return db.prepare('SELECT * FROM guarniciones WHERE id = ?').get(id);
@@ -1047,6 +1052,12 @@ app.use((err, req, res, next) => {
 // ---------------- arranque ----------------
 if (sembrar()) {
   console.log('Base de datos creada con datos de ejemplo. Usuario inicial: admin / admin123');
+  try {
+    const r = cargarCarta(leerCarta());
+    console.log(`Carta inicial cargada: ${r.platosCreados} platos y ${r.guarnicionesCreadas} guarniciones`);
+  } catch (e) {
+    console.error('No se pudo cargar la carta inicial:', e.message);
+  }
 }
 try {
   console.log('Respaldo del día:', respaldar(CONFIG.diasRespaldo));
