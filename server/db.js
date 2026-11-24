@@ -159,6 +159,7 @@ agregarColumna('comanda_items', 'guarnicion_base', "TEXT NOT NULL DEFAULT ''");
 agregarColumna('comanda_items', 'guarnicion_defecto', "TEXT NOT NULL DEFAULT ''");
 agregarColumna('comanda_items', 'guarnicion_eleccion_id', 'INTEGER');
 agregarColumna('comanda_items', 'guarnicion_eleccion', "TEXT NOT NULL DEFAULT ''");
+agregarColumna('usuarios', 'pin_hash', 'TEXT');
 // El menú antes se guardaba con su fecha en productos: se pasa a menu_dia
 db.exec(`INSERT OR IGNORE INTO menu_dia (fecha, producto_id)
          SELECT fecha, id FROM productos WHERE tipo = 'menu' AND fecha IS NOT NULL`);
@@ -204,20 +205,30 @@ function tx(fn) {
   }
 }
 
+// ---------- ingreso con PIN ----------
+// password_hash queda sin uso (antes se ingresaba con contraseña).
+const PIN_INICIAL = '1234';
+const esPin = (v) => /^\d{4}$/.test(String(v ?? ''));
+// Usuarios de una base anterior (sin PIN) reciben el PIN inicial: el admin debe cambiarlo.
+const sinPin = db.prepare('SELECT id, usuario FROM usuarios WHERE pin_hash IS NULL').all();
+for (const u of sinPin) db.prepare('UPDATE usuarios SET pin_hash = ? WHERE id = ?').run(hashPassword(PIN_INICIAL), u.id);
+if (sinPin.length)
+  console.warn(`Usuarios sin PIN (${sinPin.map((u) => u.usuario).join(', ')}): se les asignó el PIN ${PIN_INICIAL}. Cámbielo en Gestión → Usuarios.`);
+
 // ---------- datos iniciales (solo si la base está vacía) ----------
 function sembrar() {
   const { n } = db.prepare('SELECT COUNT(*) AS n FROM usuarios').get();
   if (n > 0) return false;
   tx(() => {
     const insU = db.prepare(
-      'INSERT INTO usuarios (nombre, usuario, password_hash, rol, creado_en) VALUES (?,?,?,?,?)'
+      "INSERT INTO usuarios (nombre, usuario, pin_hash, rol, creado_en, password_hash) VALUES (?,?,?,?,?,'')"
     );
-    insU.run('Administrador', 'admin', hashPassword('admin123'), 'admin', ahora());
+    insU.run('Administrador', 'admin', hashPassword(PIN_INICIAL), 'admin', ahora());
     const mozos = ['Mozo Uno', 'Mozo Dos', 'Mozo Tres'].map(
-      (nombre, i) => insU.run(nombre, `mozo${i + 1}`, hashPassword('1234'), 'mozo', ahora()).lastInsertRowid
+      (nombre, i) => insU.run(nombre, `mozo${i + 1}`, hashPassword(PIN_INICIAL), 'mozo', ahora()).lastInsertRowid
     );
-    insU.run('Caja', 'caja1', hashPassword('1234'), 'caja', ahora());
-    insU.run('Cocina', 'cocina1', hashPassword('1234'), 'cocina', ahora());
+    insU.run('Caja', 'caja1', hashPassword(PIN_INICIAL), 'caja', ahora());
+    insU.run('Cocina', 'cocina1', hashPassword(PIN_INICIAL), 'cocina', ahora());
 
     const insM = db.prepare('INSERT INTO mesas (numero, capacidad, mozo_id) VALUES (?,?,?)');
     for (let i = 1; i <= 9; i++) insM.run(String(i), i % 3 === 0 ? 6 : 4, mozos[Math.floor((i - 1) / 3)]);
@@ -240,4 +251,4 @@ function respaldar(diasRetencion = 30) {
   return destino;
 }
 
-module.exports = { db, tx, hoy, ahora, hashPassword, verificarPassword, sembrar, respaldar, DB_PATH };
+module.exports = { db, tx, hoy, ahora, hashPassword, verificarPassword, esPin, sembrar, respaldar, DB_PATH };

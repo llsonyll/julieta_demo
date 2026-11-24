@@ -36,11 +36,22 @@ const ESTADO_TXT = {
 const claseEstado = (e) => (EN_COCINA.includes(e) ? 'enviado_cocina' : e);
 const ROL_TXT = { admin: 'Administrador', mozo: 'Mozo', caja: 'Caja', cocina: 'Cocina' };
 const TABS = {
-  admin: [['comandas', '📋', 'Comandas'], ['tickets', '🖨️', 'Tickets'], ['mesas', '🍽️', 'Mesas'], ['reporte', '📊', 'Reporte'], ['admin', '⚙️', 'Gestión']],
-  mozo: [['comandas', '📋', 'Comandas'], ['mesas', '🍽️', 'Mesas'], ['carta', '📖', 'Menú']],
-  caja: [['comandas', '📋', 'Comandas'], ['tickets', '🖨️', 'Tickets'], ['mesas', '🍽️', 'Mesas'], ['reporte', '📊', 'Reporte']],
-  cocina: [['tickets', '🖨️', 'Tickets'], ['carta', '📖', 'Platos']],
+  admin: ['mesas', 'comandas', 'tickets', 'reporte', 'admin'],
+  mozo: ['mesas', 'comandas', 'carta'],
+  caja: ['mesas', 'comandas', 'tickets', 'reporte'],
+  cocina: ['tickets', 'carta'],
 };
+// [texto, grupo, icono (trazos SVG estilo lucide)]
+const TAB_INFO = {
+  mesas: ['Salón', 'Operaciones', '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>'],
+  comandas: ['Pedidos / Comandas', 'Operaciones', '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M12 11h4M12 16h4M8 11h.01M8 16h.01"/>'],
+  tickets: ['Cocina', 'Operaciones', '<path d="M17 21a1 1 0 0 0 1-1v-5.35c0-.46.32-.84.73-1.04a4 4 0 0 0-2.14-7.59 5 5 0 0 0-9.18 0 4 4 0 0 0-2.14 7.59c.41.2.73.58.73 1.04V20a1 1 0 0 0 1 1ZM6 17h12"/>'],
+  carta: ['Carta del día', 'Catálogos', '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>'],
+  reporte: ['Reportes', 'Análisis', '<path d="M3 3v18h18M8 17V9M13 17V5M18 17v-3"/>'],
+  admin: ['Configuración', 'Sistema', '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'],
+};
+const svg = (d, t = 20) =>
+  `<svg width="${t}" height="${t}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 
 const dinero = (n) => `${S.config.moneda} ${Number(n || 0).toFixed(2)}`;
 const hora = (s) => (s ? String(s).slice(11, 16) : '');
@@ -178,7 +189,7 @@ function confirmar(mensaje, { ok = 'Confirmar', peligro = false } = {}) {
 
 /**
  * Formulario genérico en modal.
- * campos: [{ n, l, t: text|number|password|select|check|textarea|date, op: [[valor, texto]], req, ayuda, paso, lista }]
+ * campos: [{ n, l, t: text|number|password|select|check|textarea|date, op: [[valor, texto]], req, ayuda, paso, lista, attrs }]
  */
 function formulario({ titulo, campos, valores = {}, enviar, eliminar, textoEliminar = 'Eliminar' }) {
   const html = campos
@@ -195,7 +206,7 @@ function formulario({ titulo, campos, valores = {}, enviar, eliminar, textoElimi
       else if (c.t === 'textarea') control = `<textarea name="${c.n}">${esc(v)}</textarea>`;
       else
         control = `<input name="${c.n}" type="${c.t || 'text'}" value="${esc(v)}" ${c.lista ? `list="dl-${c.n}"` : ''}
-          ${c.t === 'number' ? `step="${c.paso || 'any'}" min="0" inputmode="decimal"` : ''} autocomplete="off">
+          ${c.t === 'number' ? `step="${c.paso || 'any'}" min="0" inputmode="decimal"` : ''} ${c.attrs || ''} autocomplete="off">
           ${c.lista ? `<datalist id="dl-${c.n}">${c.lista.map((o) => `<option value="${esc(o)}">`).join('')}</datalist>` : ''}`;
       return `<label class="campo"><span>${esc(c.l)}</span>${control}${c.ayuda ? `<small class="suave">${esc(c.ayuda)}</small>` : ''}</label>`;
     })
@@ -314,15 +325,14 @@ function notificar(d) {
 }
 
 async function actualizarContadores() {
-  if (!S.me || !TABS[S.me.rol].some(([t]) => t === 'tickets')) return;
+  if (!S.me || !TABS[S.me.rol].includes('tickets')) return;
   try {
     const lista = await api('GET', '/api/comandas?vista=cocina');
     const n = lista.filter((c) => !c.ticket_impreso).length;
-    const el = $('.nav a[data-tab="tickets"] .contador');
-    if (el) {
+    $$('.contador').forEach((el) => {
       el.textContent = n;
       el.classList.toggle('oculto', !n);
-    }
+    });
   } catch {}
 }
 
@@ -334,60 +344,149 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------------- login y estructura ----------------
-function renderLogin(mensaje = '') {
+const iniciales = (n) => String(n).trim().split(/\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
+const COLORES_AVATAR = ['#7c3aed', '#0d9488', '#db2777', '#d97706', '#2563eb', '#ea580c', '#16a34a', '#9333ea'];
+
+async function renderLogin(mensaje = '') {
   cerrarModal();
+  let usuarios = [];
+  try {
+    usuarios = await api('GET', '/api/login/usuarios');
+  } catch (e) {
+    mensaje = e.message;
+  }
+  let sel = null;
+  let pin = '';
+  let ocupado = false;
   $('#app').innerHTML = `
     <div class="login">
-      <form class="tarjeta pila" id="form-login">
-        <div>
-          <h1>🍽️ ${esc(S.config.nombreRestaurante)}</h1>
-          <div class="suave">Sistema de comandas</div>
+      <div class="login-marca">
+        <div class="logo">${esc(iniciales(S.config.nombreRestaurante))}</div>
+        <h1>${esc(S.config.nombreRestaurante)}</h1>
+        <div>Sistema de comandas</div>
+      </div>
+      <div class="login-caja">
+        <div class="login-usuarios">
+          <h3>¿Quién eres?</h3>
+          <div class="usuarios-grid">${usuarios
+            .map(
+              (u) => `<button type="button" class="usuario-btn" data-id="${u.id}">
+                <span class="avatar" style="background:${COLORES_AVATAR[u.id % COLORES_AVATAR.length]}">${esc(iniciales(u.nombre))}</span>
+                <b>${esc(u.nombre)}</b><small>${ROL_TXT[u.rol]}</small></button>`
+            )
+            .join('')}</div>
         </div>
-        <label class="campo"><span>Usuario</span><input name="usuario" autocomplete="username" autocapitalize="none" required></label>
-        <label class="campo"><span>Contraseña</span><input name="password" type="password" autocomplete="current-password" required></label>
-        <div class="error">${esc(mensaje)}</div>
-        <button class="btn primario bloque">Ingresar e iniciar turno</button>
-      </form>
+        <div class="login-pin">
+          <div class="suave" id="pin-titulo">Selecciona un usuario</div>
+          <div class="pin-puntos" aria-hidden="true">${'<i></i>'.repeat(4)}</div>
+          <div class="error" id="pin-error" role="alert">${esc(mensaje)}</div>
+          <div class="teclado">${[1, 2, 3, 4, 5, 6, 7, 8, 9, '', 0, '⌫']
+            .map((k) => (k === '' ? '<span></span>' : `<button type="button" data-k="${k}" disabled aria-label="${k === '⌫' ? 'Borrar' : k}">${k}</button>`))
+            .join('')}</div>
+        </div>
+      </div>
     </div>`;
-  const f = $('#form-login');
-  f.onsubmit = async (e) => {
-    e.preventDefault();
+
+  const pintar = () => $$('.pin-puntos i').forEach((el, i) => el.classList.toggle('lleno', i < pin.length));
+  const tecla = async (k) => {
+    if (!sel || ocupado) return;
+    $('#pin-error').textContent = '';
+    if (k === '⌫') pin = pin.slice(0, -1);
+    else if (pin.length < 4) pin += k;
+    pintar();
+    if (pin.length < 4) return;
+    ocupado = true;
     desbloquearAudio();
-    const btn = $('button', f);
-    btn.disabled = true;
     try {
-      S.me = await api('POST', '/api/login', { usuario: f.usuario.value, password: f.password.value });
+      S.me = await api('POST', '/api/login', { id: sel.id, pin });
+      document.removeEventListener('keydown', teclaFisica);
       iniciarApp();
     } catch (err) {
-      $('.error', f).textContent = err.message;
-      btn.disabled = false;
+      $('#pin-error').textContent = err.message;
+      pin = '';
+      pintar();
+    } finally {
+      ocupado = false;
     }
   };
+  // Teclado físico (PC de caja): dígitos y retroceso
+  const teclaFisica = (e) => {
+    if (!$('.login')) return document.removeEventListener('keydown', teclaFisica);
+    if (/^\d$/.test(e.key)) tecla(e.key);
+    else if (e.key === 'Backspace') tecla('⌫');
+  };
+  document.addEventListener('keydown', teclaFisica);
+
+  $$('.usuario-btn').forEach(
+    (b) =>
+      (b.onclick = () => {
+        sel = usuarios.find((u) => u.id === Number(b.dataset.id));
+        pin = '';
+        pintar();
+        $$('.usuario-btn').forEach((x) => x.classList.toggle('activo', x === b));
+        $$('.teclado button').forEach((x) => (x.disabled = false));
+        $('#pin-titulo').textContent = `Hola ${sel.nombre}, ingresa tu PIN`;
+        $('#pin-error').textContent = '';
+        $('.login-pin').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      })
+  );
+  $$('.teclado button').forEach((b) => (b.onclick = () => tecla(b.dataset.k)));
 }
 
 function renderShell() {
-  const tabs = TABS[S.me.rol] || [];
+  const rol = S.me.rol;
+  const grupos = {};
+  for (const id of TABS[rol]) (grupos[TAB_INFO[id][1]] ||= []).push(id);
+  let colapsado = false;
+  try {
+    colapsado = localStorage.getItem('lateral') === 'colapsado';
+  } catch {}
   $('#app').innerHTML = `
-    <header class="cabecera">
-      <span class="punto" id="punto"></span>
-      <div class="crecer">
-        <div class="titulo">${esc(S.config.nombreRestaurante)}</div>
-        <div class="usuario">${esc(S.me.nombre)} · ${ROL_TXT[S.me.rol]}</div>
+    <div class="app${colapsado ? ' colapsado' : ''}">
+      <aside class="lateral">
+        <div class="marca">
+          <div class="logo">${esc(iniciales(S.config.nombreRestaurante))}</div>
+          <div class="txt"><b>${esc(S.config.nombreRestaurante)}</b><small>${esc(S.config.direccion || 'Sistema de comandas')}</small></div>
+        </div>
+        <div class="rol-pill"><span class="txt">${ROL_TXT[rol]}</span><span class="punto" id="punto"></span></div>
+        <nav class="nav">${Object.entries(grupos)
+          .map(
+            ([g, ids]) => `<div class="grupo">${esc(g)}</div>${ids
+              .map((id) => `<a href="#/${id}" data-tab="${id}" title="${esc(TAB_INFO[id][0])}">${svg(TAB_INFO[id][2])}<span class="txt">${esc(TAB_INFO[id][0])}</span>${id === 'tickets' ? '<span class="contador oculto"></span>' : ''}</a>`)
+              .join('')}`
+          )
+          .join('')}</nav>
+        <button class="colapsar" data-accion="colapsar">${svg('<path d="m15 18-6-6 6-6"/>', 16)}<span class="txt">Colapsar</span></button>
+      </aside>
+      <div class="velo" data-accion="menu-movil"></div>
+      <div class="cuerpo">
+        <header class="barra-sup">
+          <button class="btn-menu" data-accion="menu-movil" aria-label="Menú">${svg('<path d="M4 6h16M4 12h16M4 18h16"/>', 22)}</button>
+          <h1 id="titulo-vista" class="crecer"></h1>
+          <span class="reloj" id="reloj"></span>
+          ${TABS[rol].includes('tickets') ? `<a class="campana" href="#/tickets" aria-label="Tickets pendientes">${svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/>')}<span class="contador oculto"></span></a>` : ''}
+          <button class="usuario-sup" data-accion="menu-usuario" aria-label="Menú de usuario">
+            <span class="avatar" style="background:${COLORES_AVATAR[S.me.id % COLORES_AVATAR.length]}">${esc(iniciales(S.me.nombre))}</span>
+            <span class="txt"><b>${esc(S.me.nombre)}</b><small>${ROL_TXT[rol]}</small></span>
+            ${svg('<path d="m6 9 6 6 6-6"/>', 16)}
+          </button>
+        </header>
+        <main id="vista"></main>
       </div>
-      <button class="btn-icono" data-accion="menu-usuario" aria-label="Menú de usuario">☰</button>
-    </header>
-    <main id="vista"></main>
-    <nav class="nav">
-      ${tabs
-        .map(([id, ico, txt]) => `<a href="#/${id}" data-tab="${id}"><span class="ico">${ico}</span>${esc(txt)}<span class="contador oculto"></span></a>`)
-        .join('')}
-    </nav>`;
+    </div>`;
+  clearInterval(S.reloj);
+  const tic = () => {
+    const el = $('#reloj');
+    if (el) el.textContent = new Date(ahoraServidor()).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+  };
+  tic();
+  S.reloj = setInterval(tic, 10000);
 }
 
 function iniciarApp() {
   renderShell();
   abrirSSE();
-  if (!location.hash || location.hash === '#/') location.hash = `#/${TABS[S.me.rol][0][0]}`;
+  if (!location.hash || location.hash === '#/') location.hash = `#/${TABS[S.me.rol][0]}`;
   else navegar();
   actualizarContadores();
 }
@@ -419,11 +518,14 @@ async function navegar() {
   const r = rutaActual();
   const def = VISTAS[r.nombre];
   if (!def || !def.roles.includes(S.me.rol)) {
-    location.hash = `#/${TABS[S.me.rol][0][0]}`;
+    location.hash = `#/${TABS[S.me.rol][0]}`;
     return;
   }
   const tabActivo = { comanda: 'comandas', nueva: 'comandas', editar: 'comandas' }[r.nombre] || r.nombre;
   $$('.nav a').forEach((a) => a.classList.toggle('activo', a.dataset.tab === tabActivo));
+  $('.app')?.classList.remove('abierto');
+  const titulo = $('#titulo-vista');
+  if (titulo) titulo.textContent = TAB_INFO[tabActivo]?.[0] || '';
   const main = $('#vista');
   S.vista = { nombre: r.nombre, escucha: def.escucha, recargar: () => def.fn(main, r, true) };
   if (!main.dataset.cargado) main.innerHTML = '<div class="vacio">Cargando…</div>';
@@ -504,6 +606,13 @@ function abrirCobro(comandas, titulo) {
 
 // ---------------- acciones (delegación de clicks) ----------------
 const ACCIONES = {
+  colapsar: () => {
+    const c = $('.app').classList.toggle('colapsado');
+    try {
+      localStorage.setItem('lateral', c ? 'colapsado' : '');
+    } catch {}
+  },
+  'menu-movil': () => $('.app').classList.toggle('abierto'),
   'menu-usuario': () => {
     const t = S.me.turno;
     const m = abrirModal(`
@@ -1559,8 +1668,8 @@ async function adminUsuarios(cont) {
   const us = await api('GET', '/api/usuarios');
   const campos = (nuevo) => [
     { n: 'nombre', l: 'Nombre completo', req: true },
-    { n: 'usuario', l: 'Usuario (para ingresar)', req: true },
-    { n: 'password', l: nuevo ? 'Contraseña' : 'Nueva contraseña (vacío = no cambiar)', t: 'password', req: nuevo },
+    { n: 'usuario', l: 'Usuario (identificador interno)', req: true },
+    { n: 'pin', l: nuevo ? 'PIN (4 dígitos)' : 'Nuevo PIN (vacío = no cambiar)', t: 'password', attrs: 'inputmode="numeric" maxlength="4" pattern="\\d{4}"', req: nuevo },
     { n: 'rol', l: 'Rol', t: 'select', op: Object.entries(ROL_TXT), def: 'mozo' },
     { n: 'activo', l: 'Activo (puede ingresar)', t: 'check', def: true },
   ];
@@ -1584,7 +1693,7 @@ async function adminUsuarios(cont) {
         formulario({
           titulo: `Editar: ${u.nombre}`,
           campos: campos(false),
-          valores: { ...u, password: '' },
+          valores: { ...u, pin: '' },
           enviar: (d) => api('PUT', `/api/usuarios/${u.id}`, d),
           eliminar:
             u.id !== S.me.id

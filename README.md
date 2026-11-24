@@ -23,7 +23,7 @@ npm install
 npm start
 ```
 
-Abra <http://localhost:3000> en la PC e ingrese con `admin` / `admin123`.
+Abra <http://localhost:3000> en la PC, toque **Administrador** e ingrese el PIN `1234`.
 La consola muestra también la dirección para los celulares (`http://192.168.x.x:3000`).
 Para que arranque solo al encender la PC, vea la sección 2.
 
@@ -35,7 +35,7 @@ Para desarrollo (se reinicia al guardar cambios): `npm run dev`.
 
 | Módulo | Qué hace | Quién lo usa |
 |---|---|---|
-| **Usuarios y roles** | Crear, editar, desactivar y eliminar usuarios. Roles: `admin`, `mozo`, `caja`, `cocina`. | Admin |
+| **Usuarios y roles** | Crear, editar, desactivar y eliminar usuarios. Cada uno ingresa eligiendo su nombre y marcando su **PIN de 4 dígitos**. Roles: `admin`, `mozo`, `caja`, `cocina`. | Admin |
 | **Platos** | Catálogo de platos que se crea una sola vez. Cada plato es **Menú del día** (sale los días que se marque) o **Extra** (carta fija). Tiene precio, una **guarnición por defecto** (ej: arroz) y puede llevar **una guarnición a elección**. Se indica si es para mesa, para llevar o ambos. | Admin |
 | **Guarniciones** | Lista de guarniciones (arroz, papas, picante de lisas, kapchi…). No cambian el precio del plato. | Admin |
 | **Carta del día** | Pantalla diaria del admin: marcar qué platos de menú salen y qué guarniciones a elección se ofrecen ese día. Botón **"Copiar carta del día anterior"**. | Admin |
@@ -132,14 +132,20 @@ Crea un servicio `systemd` llamado `comandas` (`systemctl status comandas`, `jou
 
 Al iniciar por primera vez se crea la base de datos con datos de ejemplo:
 
-| Usuario | Contraseña | Rol |
-|---|---|---|
-| `admin` | `admin123` | Administrador |
-| `mozo1`, `mozo2`, `mozo3` | `1234` | Mozo |
-| `caja1` | `1234` | Caja |
-| `cocina1` | `1234` | Cocina |
+| Usuario | Rol |
+|---|---|
+| Administrador | Administrador |
+| Mozo Uno, Mozo Dos, Mozo Tres | Mozo |
+| Caja | Caja |
+| Cocina | Cocina |
 
-**Cambie estas contraseñas** (Gestión → Usuarios) y revise las mesas de ejemplo antes de usarlo en serio.
+Para ingresar se toca el nombre en la pantalla **"¿Quién eres?"** y se marca el **PIN de 4 dígitos**.
+Todos empiezan con el PIN `1234`: **cámbielo para cada usuario** (Gestión → Usuarios) y revise las
+mesas de ejemplo antes de usarlo en serio. En la PC también se puede marcar el PIN con el teclado.
+
+Tras 5 PIN incorrectos seguidos, ese usuario queda bloqueado 5 minutos (o hasta que el admin le
+cambie el PIN). Al actualizar desde una versión con contraseñas, los usuarios existentes reciben
+el PIN `1234` y la consola lo avisa.
 
 ### Carta de platos tradicionales
 
@@ -199,7 +205,7 @@ comandas/
 
 - **Node.js + Express**, base de datos **SQLite** integrada en Node (`node:sqlite`), sin
   motor de base de datos aparte.
-- Contraseñas guardadas con hash `scrypt`; las sesiones usan una cookie `HttpOnly`.
+- PIN guardados con hash `scrypt` y bloqueo tras 5 intentos fallidos; las sesiones usan una cookie `HttpOnly`.
 - PDF generados en el servidor con `pdfkit`.
 - Tablas: `usuarios`, `sesiones`, `turnos`, `mesas`, `guarniciones`, `productos` (catálogo de platos),
   `menu_dia` y `guarniciones_dia` (carta de cada día), `comandas`, `comanda_items` (con las guarniciones

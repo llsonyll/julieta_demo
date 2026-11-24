@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const express = require('express');
-const { db, tx, hoy, ahora, hashPassword, verificarPassword, sembrar, respaldar } = require('./db');
+const { db, tx, hoy, ahora, hashPassword, verificarPassword, esPin, sembrar, respaldar } = require('./db');
 const { generarPDF, ticketCocina, comprobante } = require('./pdf');
 const { leerCarta, cargarCarta } = require('./carta-inicial');
 
@@ -117,12 +117,32 @@ function turnoActual(usuarioId) {
   return db.prepare('SELECT * FROM turnos WHERE usuario_id = ? AND fin IS NULL AND fecha = ?').get(usuarioId, hoy()) || null;
 }
 
+// Lista para la pantalla de ingreso ("¿Quién eres?"): solo nombre y rol.
+app.get(
+  '/api/login/usuarios',
+  ruta(() => db.prepare('SELECT id, nombre, rol FROM usuarios WHERE activo = 1 ORDER BY rol, nombre').all())
+);
+
+// Un PIN de 4 dígitos se adivina probando: tras MAX_FALLOS seguidos se bloquea ese usuario un rato.
+// ponytail: en memoria, se reinicia con el servidor; basta para una red local.
+const MAX_FALLOS = 5;
+const BLOQUEO_MS = 5 * 60 * 1000;
+const fallos = new Map(); // usuarioId -> { n, hasta }
+
 app.post(
   '/api/login',
   ruta((req, res) => {
-    const usuario = texto(req.body.usuario, 50);
-    const u = db.prepare('SELECT * FROM usuarios WHERE usuario = ? AND activo = 1').get(usuario);
-    if (!u || !verificarPassword(req.body.password ?? '', u.password_hash)) fail(401, 'Usuario o contraseña incorrectos');
+    const id = Number(req.body.id);
+    const f = fallos.get(id);
+    if (f?.hasta > Date.now()) fail(429, `Demasiados intentos. Espere ${Math.ceil((f.hasta - Date.now()) / 60000)} min o pida ayuda al administrador.`);
+    const u = db.prepare('SELECT * FROM usuarios WHERE id = ? AND activo = 1').get(id);
+    if (!u) fail(401, 'Usuario no encontrado');
+    if (!esPin(req.body.pin) || !verificarPassword(req.body.pin, u.pin_hash)) {
+      const n = (f?.hasta ? 0 : f?.n ?? 0) + 1;
+      fallos.set(id, n >= MAX_FALLOS ? { n, hasta: Date.now() + BLOQUEO_MS } : { n });
+      fail(401, n >= MAX_FALLOS ? 'PIN incorrecto. Usuario bloqueado por 5 minutos.' : 'PIN incorrecto');
+    }
+    fallos.delete(id);
     const token = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO sesiones (token, usuario_id, creado_en) VALUES (?,?,?)').run(token, u.id, ahora());
     const turno = abrirTurno(u.id);
@@ -135,6 +155,7 @@ app.post(
 app.get('/api/config', (req, res) =>
   res.json({
     nombreRestaurante: CONFIG.nombreRestaurante,
+    direccion: CONFIG.direccion,
     moneda: CONFIG.moneda,
     estados: ESTADOS,
     metodosPago: METODOS_PAGO,
@@ -206,8 +227,7 @@ function validarUsuario(b, nuevo) {
   if (!nombre) fail(400, 'El nombre es obligatorio');
   if (!/^[a-z0-9._-]{3,40}$/.test(usuario)) fail(400, 'Usuario: 3 a 40 caracteres (letras, números, . _ -)');
   if (!ROLES.includes(b.rol)) fail(400, 'Rol inválido');
-  if (nuevo && String(b.password ?? '').length < 4) fail(400, 'La contraseña debe tener al menos 4 caracteres');
-  if (!nuevo && b.password && String(b.password).length < 4) fail(400, 'La contraseña debe tener al menos 4 caracteres');
+  if ((nuevo || b.pin) && !esPin(b.pin)) fail(400, 'El PIN debe tener exactamente 4 dígitos');
   return { nombre, usuario, rol: b.rol, activo: b.activo === undefined ? 1 : bool(b.activo) };
 }
 const existeUsuario = (usuario, exceptoId = 0) =>
@@ -220,8 +240,8 @@ app.post(
     const u = validarUsuario(req.body, true);
     if (existeUsuario(u.usuario)) fail(409, 'Ese nombre de usuario ya existe');
     const id = db
-      .prepare('INSERT INTO usuarios (nombre, usuario, password_hash, rol, activo, creado_en) VALUES (?,?,?,?,?,?)')
-      .run(u.nombre, u.usuario, hashPassword(req.body.password), u.rol, u.activo, ahora()).lastInsertRowid;
+      .prepare("INSERT INTO usuarios (nombre, usuario, pin_hash, rol, activo, creado_en, password_hash) VALUES (?,?,?,?,?,?,'')")
+      .run(u.nombre, u.usuario, hashPassword(req.body.pin), u.rol, u.activo, ahora()).lastInsertRowid;
     return db.prepare(`SELECT ${COLS_USUARIO} FROM usuarios WHERE id = ?`).get(id);
   })
 );
@@ -236,7 +256,10 @@ app.put(
     if (existeUsuario(u.usuario, id)) fail(409, 'Ese nombre de usuario ya existe');
     if (id === req.user.id && (u.rol !== 'admin' || !u.activo)) fail(400, 'No puede quitarse el rol de admin ni desactivarse a sí mismo');
     db.prepare('UPDATE usuarios SET nombre=?, usuario=?, rol=?, activo=? WHERE id=?').run(u.nombre, u.usuario, u.rol, u.activo, id);
-    if (req.body.password) db.prepare('UPDATE usuarios SET password_hash=? WHERE id=?').run(hashPassword(req.body.password), id);
+    if (req.body.pin) {
+      db.prepare('UPDATE usuarios SET pin_hash=? WHERE id=?').run(hashPassword(req.body.pin), id);
+      fallos.delete(id); // el admin cambia el PIN: se desbloquea
+    }
     if (!u.activo) db.prepare('DELETE FROM sesiones WHERE usuario_id = ?').run(id);
     if (u.rol !== 'mozo') db.prepare('UPDATE mesas SET mozo_id = NULL WHERE mozo_id = ?').run(id);
     emitir('mesas');
