@@ -550,6 +550,51 @@ async function recargarVista() {
 const ir = (hash) => (location.hash = hash);
 
 // ---------------- cobro ----------------
+async function copiar(texto) {
+  try {
+    await navigator.clipboard.writeText(texto);
+  } catch {
+    // Por http en la red local el navegador no da el portapapeles moderno: se usa el método clásico
+    const a = Object.assign(document.createElement('textarea'), { value: texto });
+    document.body.append(a);
+    a.select();
+    document.execCommand('copy');
+    a.remove();
+  }
+  toast(`Copiado: ${texto.length > 40 ? `${texto.slice(0, 40)}…` : texto}`, 'ok', 1500);
+}
+
+// Detalle para emitir la boleta en SEE-SOL (SUNAT): platos iguales con el mismo precio en una línea
+// (las guarniciones no cambian el precio). Cada dato se copia con un toque.
+function detalleSunat(comandas, total) {
+  const lineas = new Map();
+  for (const c of comandas)
+    for (const it of c.items) {
+      const k = `${it.nombre}|${it.precio}`;
+      const l = lineas.get(k) || { nombre: it.nombre, precio: it.precio, cantidad: 0 };
+      l.cantidad += it.cantidad;
+      lineas.set(k, l);
+    }
+  const tasa = Number(S.config.tasaIGV) || 0;
+  const n2 = (n) => Number(n).toFixed(2);
+  const sinIgv = (n) => (n / (1 + tasa / 100)).toFixed(4); // 4 decimales para que el total cuadre
+  const celda = (v, num = true) => `<td${num ? ' class="num"' : ''}><button type="button" class="copiable" data-copiar="${esc(v)}">${esc(v)}</button></td>`;
+  const filas = [...lineas.values()];
+  const todo = filas.map((l) => [l.cantidad, l.nombre, n2(l.precio), n2(l.precio * l.cantidad), ...(tasa ? [sinIgv(l.precio)] : [])].join('\t')).join('\n');
+  return `
+    <div class="tabla-wrap"><table class="tabla-sunat">
+      <thead><tr><th class="num">Cant.</th><th>Descripción</th><th class="num">P. unit.</th><th class="num">Importe</th>${tasa ? `<th class="num">V. unit. sin IGV</th>` : ''}</tr></thead>
+      <tbody>${filas
+        .map((l) => `<tr>${celda(String(l.cantidad))}${celda(l.nombre, false)}${celda(n2(l.precio))}${celda(n2(l.precio * l.cantidad))}${tasa ? celda(sinIgv(l.precio)) : ''}</tr>`)
+        .join('')}</tbody>
+      <tfoot><tr><th colspan="3">Total (incluye IGV)</th>${celda(n2(total))}${tasa ? '<td></td>' : ''}</tr></tfoot>
+    </table></div>
+    <div class="fila entre">
+      <small class="suave">Unidad: NIU (unidad) · Toque un dato para copiarlo.${tasa ? ` Valor sin IGV calculado con ${tasa}%.` : ''}</small>
+      <button type="button" class="btn chico" data-copiar="${esc(todo)}">Copiar todo</button>
+    </div>`;
+}
+
 function abrirCobro(comandas, titulo) {
   const total = comandas.reduce((s, c) => s + c.total, 0);
   const metodos = S.config.metodosPago || ['Efectivo'];
@@ -559,6 +604,8 @@ function abrirCobro(comandas, titulo) {
       <div class="fila entre"><h3>${esc(titulo)}</h3><button class="btn chico" data-x>✕</button></div>
       <div class="suave">${comandas.map((c) => `#${c.numero_dia}`).join(', ')}</div>
       <div class="total-cobro">${dinero(total)}</div>
+      <button type="button" class="btn bloque" id="ver-sunat">📋 Detalle para boleta SUNAT</button>
+      <div id="sunat" class="pila oculto">${detalleSunat(comandas, total)}</div>
       <div><div class="etiqueta-campo">Forma de pago</div>
         <div class="opciones">${metodos.map((x) => `<button type="button" class="chip ${x === metodo ? 'activo' : ''}" data-metodo="${esc(x)}">${esc(x)}</button>`).join('')}</div></div>
       <label class="campo" id="campo-recibido"><span>Recibido (opcional, para calcular el vuelto)</span>
@@ -568,6 +615,8 @@ function abrirCobro(comandas, titulo) {
       <button class="btn acento bloque" id="cobrar">💵 Cobrar e imprimir comprobante</button>
     </div>`);
   $('[data-x]', m).onclick = cerrarModal;
+  $('#ver-sunat', m).onclick = () => $('#sunat', m).classList.toggle('oculto');
+  $$('[data-copiar]', m).forEach((b) => (b.onclick = () => copiar(b.dataset.copiar)));
   const recibido = $('#recibido', m);
   const vuelto = () => {
     const r = Number(recibido.value);

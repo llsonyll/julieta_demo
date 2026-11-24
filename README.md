@@ -44,7 +44,7 @@ Para desarrollo (se reinicia al guardar cambios): `npm run dev`.
 | **Comandas** | El mozo elige la mesa y los platos. En cada plato puede **cambiar o quitar la guarnición por defecto**, elegir la **guarnición a elección del día**, la cantidad y una nota. La caja puede tomar pedidos para llevar. | Mozo, Caja, Admin |
 | **Etapas** | Generado → **En cocina** (se genera el ticket) → **Entregado** (lo marca el mozo), y Cancelado. Cada cambio queda en el historial con hora y usuario. | Mozo, Caja, Admin |
 | **Tickets de cocina** | Pantalla "Tickets" para la PC que tiene la impresora: avisa con sonido cada ticket nuevo y permite imprimirlo (uno o todos los pendientes). En Chrome/Edge se puede activar la **impresión automática**. Si un admin modifica una comanda ya enviada, el ticket se reimprime marcado como MODIFICADA. | Caja, Admin |
-| **Cobro y comprobante** | Cobrar una comanda o **la mesa completa**, eligiendo la forma de pago (efectivo con cálculo de vuelto, Yape, Plin, tarjeta, transferencia, otro). Se genera el **comprobante en PDF**. Un cobro se puede anular. Cobrar libera la mesa. | Caja, Admin |
+| **Cobro y comprobante** | Cobrar una comanda o **la mesa completa**, eligiendo la forma de pago (efectivo con cálculo de vuelto, Yape, Plin, tarjeta, transferencia, otro). Se genera el **comprobante en PDF**. El botón **"Detalle para boleta SUNAT"** muestra los platos agrupados (cantidad, descripción, precio e importe) para copiarlos con un toque en SEE-SOL. Un cobro se puede anular. Cobrar libera la mesa. | Caja, Admin |
 | **Reporte del día** | Comandas, mesas atendidas, empleados en turno, total vendido y cobrado, **cobros por forma de pago**, ventas por empleado y por mesa, platos más vendidos, **guarniciones servidas** y tiempo promedio de cocina a entrega. Se puede elegir otra fecha e imprimir. | Admin, Caja |
 | **Turnos** | El turno se abre automáticamente al ingresar. El empleado lo cierra con "Finalizar turno y salir". | Todos |
 
@@ -86,6 +86,7 @@ hasta que se entreguen; su ticket vuelve a quedar pendiente de impresión).
      "nombreRestaurante": "Picantería Julieta",
      "moneda": "S/",
      "diasRespaldo": 30,
+     "tasaIGV": 0,
      "ruc": "",
      "direccion": "",
      "telefono": "",
@@ -93,6 +94,9 @@ hasta que se entreguen; su ticket vuelve a quedar pendiente de impresión).
      "avisoComprobante": "Comprobante interno. No reemplaza a la boleta o factura electrónica."
    }
    ```
+   `tasaIGV` (opcional): porcentaje total de IGV + IPM del local, por ejemplo `18` en el régimen
+   general o la tasa reducida vigente si es restaurante MYPE (confírmela con su contador). Si se llena,
+   el detalle para boleta SUNAT muestra también el valor unitario sin IGV. Con `0` no se muestra.
 4. Abra `scripts\windows\`, haga **clic derecho en `instalar-inicio-automatico.bat` →
    "Ejecutar como administrador"**. El script:
    - instala las dependencias,

@@ -3,6 +3,7 @@
   "nombreRestaurante": "Picantería Julieta",
   "moneda": "S/",
   "diasRespaldo": 30,
+  "tasaIGV": 0,
   "ruc": "",
   "direccion": "",
   "telefono": "",

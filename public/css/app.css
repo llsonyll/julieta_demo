@@ -336,6 +336,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .etiqueta-campo { font-size: .85rem; font-weight: 600; color: var(--suave); margin-bottom: 6px; }
 .ayuda-check { display: block; margin: -4px 0 4px 32px; }
 .total-cobro { font-size: 2rem; font-weight: 800; color: var(--primario); }
+.tabla-sunat td { padding: 2px; }
+.copiable {
+  font: inherit; color: inherit; text-align: inherit; width: 100%; padding: 6px 4px; border: 0; border-radius: 6px;
+  background: none; cursor: copy; text-decoration: underline dotted var(--suave); text-underline-offset: 3px;
+}
+.copiable:hover, .copiable:focus-visible { background: #ccfbf1; }
 .tiempo { font-weight: 700; font-variant-numeric: tabular-nums; }
 .tiempo.alerta { color: var(--peligro); }
 

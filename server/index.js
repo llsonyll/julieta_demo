@@ -17,6 +17,7 @@ const CONFIG = Object.assign(
     ruc: '',
     direccion: '',
     telefono: '',
+    tasaIGV: 0, // % total (IGV + IPM) para mostrar el valor sin IGV en el detalle para SUNAT; 0 = no se muestra
     pieComprobante: '¡Gracias por su preferencia!',
     avisoComprobante: 'Comprobante interno. No reemplaza a la boleta o factura electrónica.',
   },
@@ -157,6 +158,7 @@ app.get('/api/config', (req, res) =>
     nombreRestaurante: CONFIG.nombreRestaurante,
     direccion: CONFIG.direccion,
     moneda: CONFIG.moneda,
+    tasaIGV: Number(CONFIG.tasaIGV) || 0,
     estados: ESTADOS,
     metodosPago: METODOS_PAGO,
     ahora: ahora(),
