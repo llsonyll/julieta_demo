@@ -160,6 +160,24 @@ agregarColumna('comanda_items', 'guarnicion_defecto', "TEXT NOT NULL DEFAULT ''"
 agregarColumna('comanda_items', 'guarnicion_eleccion_id', 'INTEGER');
 agregarColumna('comanda_items', 'guarnicion_eleccion', "TEXT NOT NULL DEFAULT ''");
 agregarColumna('usuarios', 'pin_hash', 'TEXT');
+// Distribución del local: nivel 1 con 4 mesas (1-4), nivel 2 con 10 (5-14), todas rectangulares
+const MESAS_LOCAL = Array.from({ length: 14 }, (_, i) => ({ numero: String(i + 1), piso: i < 4 ? 'Nivel 1' : 'Nivel 2' }));
+const sinDistribucion = !db.prepare('PRAGMA table_info(mesas)').all().some((c) => c.name === 'piso');
+agregarColumna('mesas', 'piso', "TEXT NOT NULL DEFAULT 'Nivel 1'");
+agregarColumna('mesas', 'zona', "TEXT NOT NULL DEFAULT 'Salón'");
+agregarColumna('mesas', 'forma', "TEXT NOT NULL DEFAULT 'rectangular'");
+// Bases anteriores (sin distribución, o con los valores por defecto de la primera versión del plano):
+// se reparten las mesas existentes en los dos niveles y se crean las que falten
+const conDefectoViejo =
+  !db.prepare("SELECT 1 FROM mesas WHERE piso <> 'Piso 1' OR zona <> 'Salón principal' OR forma <> 'cuadrada'").get();
+if ((sinDistribucion || conDefectoViejo) && db.prepare('SELECT COUNT(*) AS n FROM mesas').get().n > 0) {
+  db.exec("UPDATE mesas SET zona = 'Salón', forma = 'rectangular'");
+  db.exec(`UPDATE mesas SET
+    piso = CASE WHEN CAST(numero AS INTEGER) BETWEEN 1 AND 4 THEN 'Nivel 1' ELSE 'Nivel 2' END,
+    capacidad = CASE WHEN CAST(numero AS INTEGER) BETWEEN 1 AND 4 THEN 4 ELSE MIN(capacidad, 5) END`);
+  const ins = db.prepare("INSERT OR IGNORE INTO mesas (numero, capacidad, piso, zona, forma) VALUES (?, 4, ?, 'Salón', 'rectangular')");
+  for (const m of MESAS_LOCAL) ins.run(m.numero, m.piso);
+}
 // El menú antes se guardaba con su fecha en productos: se pasa a menu_dia
 db.exec(`INSERT OR IGNORE INTO menu_dia (fecha, producto_id)
          SELECT fecha, id FROM productos WHERE tipo = 'menu' AND fecha IS NOT NULL`);
@@ -230,8 +248,8 @@ function sembrar() {
     insU.run('Caja', 'caja1', hashPassword(PIN_INICIAL), 'caja', ahora());
     insU.run('Cocina', 'cocina1', hashPassword(PIN_INICIAL), 'cocina', ahora());
 
-    const insM = db.prepare('INSERT INTO mesas (numero, capacidad, mozo_id) VALUES (?,?,?)');
-    for (let i = 1; i <= 9; i++) insM.run(String(i), i % 3 === 0 ? 6 : 4, mozos[Math.floor((i - 1) / 3)]);
+    const insM = db.prepare("INSERT INTO mesas (numero, capacidad, mozo_id, piso, zona, forma) VALUES (?,4,?,?,'Salón','rectangular')");
+    MESAS_LOCAL.forEach((m, i) => insM.run(m.numero, mozos[i < 4 ? 0 : i < 9 ? 1 : 2], m.piso));
 
     // Los platos y guarniciones se cargan desde carta/platos-tradicionales.json (ver server/carta-inicial.js)
   });

@@ -301,11 +301,15 @@ function listarMesas() {
         (SELECT COUNT(*) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
            AND c.estado <> 'cancelado' AND c.pagada = 0) AS comandas_abiertas,
         (SELECT COALESCE(SUM(c.total),0) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
-           AND c.estado <> 'cancelado' AND c.pagada = 0) AS por_cobrar
+           AND c.estado <> 'cancelado' AND c.pagada = 0) AS por_cobrar,
+        (SELECT COUNT(*) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
+           AND c.estado NOT IN ('cancelado','entregado') AND c.pagada = 0) AS por_entregar,
+        (SELECT MIN(c.creado_en) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
+           AND c.estado <> 'cancelado' AND c.pagada = 0) AS ocupada_desde
        FROM mesas m LEFT JOIN usuarios u ON u.id = m.mozo_id
        ORDER BY CAST(m.numero AS INTEGER), m.numero`
     )
-    .all(hoy(), hoy())
+    .all(hoy(), hoy(), hoy(), hoy())
     .map((m) => ({ ...m, ocupada: m.comandas_abiertas > 0 }));
 }
 
@@ -324,7 +328,10 @@ function validarMesa(b) {
   const capacidad = Math.max(1, Math.min(50, parseInt(b.capacidad, 10) || 4));
   const mozo_id = b.mozo_id ? Number(b.mozo_id) : null;
   if (mozo_id && !db.prepare("SELECT 1 FROM usuarios WHERE id = ? AND rol = 'mozo'").get(mozo_id)) fail(400, 'El mozo no existe');
-  return { numero, capacidad, mozo_id, activa: b.activa === undefined ? 1 : bool(b.activa) };
+  const piso = texto(b.piso, 30) || 'Nivel 1';
+  const zona = texto(b.zona, 40) || 'Salón';
+  const forma = ['cuadrada', 'redonda', 'rectangular'].includes(b.forma) ? b.forma : 'rectangular';
+  return { numero, capacidad, mozo_id, piso, zona, forma, activa: b.activa === undefined ? 1 : bool(b.activa) };
 }
 
 app.post(
@@ -334,8 +341,8 @@ app.post(
     const m = validarMesa(req.body);
     if (db.prepare('SELECT 1 FROM mesas WHERE numero = ?').get(m.numero)) fail(409, 'Ya existe una mesa con ese número');
     const id = db
-      .prepare('INSERT INTO mesas (numero, capacidad, mozo_id, activa) VALUES (?,?,?,?)')
-      .run(m.numero, m.capacidad, m.mozo_id, m.activa).lastInsertRowid;
+      .prepare('INSERT INTO mesas (numero, capacidad, mozo_id, piso, zona, forma, activa) VALUES (?,?,?,?,?,?,?)')
+      .run(m.numero, m.capacidad, m.mozo_id, m.piso, m.zona, m.forma, m.activa).lastInsertRowid;
     emitir('mesas');
     return db.prepare('SELECT * FROM mesas WHERE id = ?').get(id);
   })
@@ -349,7 +356,9 @@ app.put(
     if (!db.prepare('SELECT 1 FROM mesas WHERE id = ?').get(id)) fail(404, 'Mesa no encontrada');
     const m = validarMesa(req.body);
     if (db.prepare('SELECT 1 FROM mesas WHERE numero = ? AND id <> ?').get(m.numero, id)) fail(409, 'Ya existe una mesa con ese número');
-    db.prepare('UPDATE mesas SET numero=?, capacidad=?, mozo_id=?, activa=? WHERE id=?').run(m.numero, m.capacidad, m.mozo_id, m.activa, id);
+    db.prepare('UPDATE mesas SET numero=?, capacidad=?, mozo_id=?, piso=?, zona=?, forma=?, activa=? WHERE id=?').run(
+      m.numero, m.capacidad, m.mozo_id, m.piso, m.zona, m.forma, m.activa, id
+    );
     emitir('mesas');
     return db.prepare('SELECT * FROM mesas WHERE id = ?').get(id);
   })
