@@ -92,7 +92,10 @@ function lineasGuarnicion(it) {
 /** Ticket para cocina: letra grande, sin precios. */
 function ticketCocina(c, momento) {
   const b = [centro('COCINA', 9), centro(`#${c.numero_dia}`, 26, true)];
-  if (c.tipo === 'local') b.push(centro(`MESA ${c.mesa_numero ?? '?'}`, 20, true));
+  if (c.tipo === 'local') {
+    b.push(centro(`MESA ${c.mesa_numero ?? '?'}`, 20, true));
+    if (c.mesa_piso) b.push(centro(c.mesa_piso.toUpperCase(), 11, true));
+  }
   else {
     b.push(centro('PARA LLEVAR', 18, true));
     if (c.cliente) b.push(centro(c.cliente, 13, true));
@@ -121,7 +124,7 @@ function comprobante({ cobro, comandas, config, cajero }) {
   b.push(centro(`${cobro.creado_en.slice(0, 10).split('-').reverse().join('/')}  ${cobro.creado_en.slice(11, 16)}`, 9), linea());
 
   const primera = comandas[0];
-  b.push(texto(primera.tipo === 'local' ? `Mesa: ${primera.mesa_numero}` : `Para llevar${primera.cliente ? `: ${primera.cliente}` : ''}`, 10, { negrita: true }));
+  b.push(texto(primera.tipo === 'local' ? `Mesa: ${primera.mesa_numero}${primera.mesa_piso ? ` (${primera.mesa_piso})` : ''}` : `Para llevar${primera.cliente ? `: ${primera.cliente}` : ''}`, 10, { negrita: true }));
   b.push(texto(`Comanda${comandas.length > 1 ? 's' : ''}: ${comandas.map((c) => `#${c.numero_dia}`).join(', ')}`, 9));
   b.push(linea(), fila('Cant. Descripción', 'Importe', 9, true), espacio(2));
 

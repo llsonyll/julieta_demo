@@ -726,7 +726,7 @@ document.addEventListener('click', (e) => {
 const badge = (estado) => `<span class="estado ${claseEstado(estado)}">${ESTADO_TXT[estado]}</span>`;
 const lugar = (c) =>
   c.tipo === 'local'
-    ? `<b>Mesa ${esc(c.mesa_numero ?? '?')}</b>`
+    ? `<b>Mesa ${esc(c.mesa_numero ?? '?')}</b>${c.mesa_piso ? ` <span class="suave peq">· ${esc(c.mesa_piso)}</span>` : ''}`
     : `<span class="etiqueta llevar">PARA LLEVAR</span>${c.cliente ? ` <b>${esc(c.cliente)}</b>` : ''}`;
 
 /** Texto de guarniciones de un ítem de comanda */
@@ -870,11 +870,14 @@ async function vComandaDetalle(main, r) {
 async function vEditorComanda(main, r, esRecarga) {
   if (esRecarga) return; // no se recarga en vivo para no perder lo que se está escribiendo
   const editando = r.nombre === 'editar';
-  const [mesas, carta, existente] = await Promise.all([
+  const [todasMesas, carta, existente] = await Promise.all([
     api('GET', '/api/mesas'),
     api('GET', '/api/carta'),
     editando ? api('GET', `/api/comandas/${r.param}`) : null,
   ]);
+  // mesas unidas: se elige el grupo ("10-11"), que se guarda en la mesa principal
+  const mesas = todasMesas.filter((m) => m.principal_id === m.id);
+  const principalDe = (id) => todasMesas.find((m) => m.id === id)?.principal_id || null;
   const productos = [...carta.menu, ...carta.extras];
   const porId = new Map(productos.map((p) => [p.id, p]));
   const guarniciones = carta.guarniciones; // activas
@@ -887,7 +890,7 @@ async function vEditorComanda(main, r, esRecarga) {
   const b = {
     id: existente?.id || null,
     tipo: existente?.tipo || r.query.get('tipo') || (S.me.rol === 'caja' ? 'llevar' : 'local'),
-    mesa_id: existente?.mesa_id || Number(r.query.get('mesa')) || null,
+    mesa_id: existente?.mesa_id || principalDe(Number(r.query.get('mesa'))),
     cliente: existente?.cliente || '',
     nota: existente?.nota || '',
     lineas: [], // { producto_id, cantidad, nota, base (id|null), eleccion (id|null) }
@@ -907,7 +910,6 @@ async function vEditorComanda(main, r, esRecarga) {
   if (existente?.mesa_id && !mesas.find((m) => m.id === existente.mesa_id))
     mesas.push({ id: existente.mesa_id, numero: existente.mesa_numero, ocupada: true });
 
-  const configurable = (p) => !!(p.guarnicion_base_id || p.con_eleccion);
   const total = () => b.lineas.reduce((s, l) => s + (porId.get(l.producto_id)?.precio || 0) * l.cantidad, 0);
   const cantidadTotal = () => b.lineas.reduce((s, l) => s + l.cantidad, 0);
   const cantidadDe = (pid) => b.lineas.filter((l) => l.producto_id === pid).reduce((s, l) => s + l.cantidad, 0);
@@ -946,14 +948,10 @@ async function vEditorComanda(main, r, esRecarga) {
       <div class="pila">
         <div class="fila entre"><h3>${esc(p.nombre)}</h3><button class="btn chico" data-x>✕</button></div>
         <div class="suave">${dinero(p.precio)}</div>
-        ${
-          p.guarnicion_base_id
-            ? `<div><div class="etiqueta-campo">Guarnición (por defecto: ${esc(p.guarnicion_base)})</div>
-               <div class="opciones">${opcionesBase
-                 .map((g) => `<button type="button" class="chip ${g.id === base ? 'activo' : ''}" data-base="${g.id}">${esc(g.nombre)}</button>`)
-                 .join('')}<button type="button" class="chip ${!base ? 'activo' : ''}" data-base="">Sin guarnición</button></div></div>`
-            : ''
-        }
+        <div><div class="etiqueta-campo">Guarnición (${p.guarnicion_base_id ? `por defecto: ${esc(p.guarnicion_base)}` : 'opcional'})</div>
+          <div class="opciones">${opcionesBase
+            .map((g) => `<button type="button" class="chip ${g.id === base ? 'activo' : ''}" data-base="${g.id}">${esc(g.nombre)}</button>`)
+            .join('')}<button type="button" class="chip ${!base ? 'activo' : ''}" data-base="">Sin guarnición</button></div></div>
         ${
           p.con_eleccion
             ? `<div><div class="etiqueta-campo">Guarnición a elección${delDia.length ? ' (de hoy)' : ''}</div>
@@ -1043,7 +1041,7 @@ async function vEditorComanda(main, r, esRecarga) {
         const p = porId.get(l.producto_id);
         const det = textoLinea(l);
         return `<div class="linea-pedido">
-          <div class="info" ${configurable(p) || l.nota !== undefined ? `data-editar-linea="${i}"` : ''}>
+          <div class="info" data-editar-linea="${i}">
             <div class="nombre">${esc(p.nombre)}</div>
             ${det ? `<div class="guar">${det}</div>` : ''}
             ${l.nota ? `<div class="guar nota-item">📝 ${esc(l.nota)}</div>` : ''}
@@ -1115,7 +1113,7 @@ async function vEditorComanda(main, r, esRecarga) {
                     ? `<div class="mesas-grid">${ordenMesas
                         .map(
                           (m) => `<button type="button" class="mesa-btn ${m.ocupada ? 'ocupada' : ''} ${m.id === b.mesa_id ? 'sel' : ''}" data-mesa="${m.id}">
-                            <span class="n">${esc(m.numero)}</span><span class="s">${m.ocupada ? 'ocupada' : 'libre'}</span>
+                            <span class="n">${esc(m.etiqueta)}</span><span class="s">${esc(m.piso)} · ${m.ocupada ? 'ocupada' : 'libre'}</span>
                             ${S.me.rol === 'mozo' && m.mozo_id === S.me.id ? '<span class="s">★ tuya</span>' : ''}</button>`
                         )
                         .join('')}</div>`
@@ -1162,9 +1160,7 @@ async function vEditorComanda(main, r, esRecarga) {
       (el) =>
         (el.onclick = () => {
           const p = porId.get(Number(el.dataset.mas));
-          if (configurable(p)) return configurarPlato(p);
-          agregarLinea({ producto_id: p.id, cantidad: 1, nota: '', base: null, eleccion: null });
-          refrescar();
+          configurarPlato(p); // todos abren el modal: guarnición opcional + nota
         })
     );
     enlazarPedido();
@@ -1284,42 +1280,71 @@ async function vTickets(main) {
 // ---------- Mesas ----------
 const EXCEDIDO_MIN = 120;
 const duracion = (m) => (m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`);
-const ESTADO_MESA = { libre: 'Libre', ocupada: 'Ocupada', cobrar: 'Por cobrar' };
 const estadoMesa = (m) => (!m.ocupada ? 'libre' : m.por_entregar ? 'ocupada' : 'cobrar');
-
-function htmlMesa(m) {
-  const est = estadoMesa(m);
-  const min = m.ocupada ? minutosDesde(m.ocupada_desde) : 0;
-  const arriba = Math.ceil(m.capacidad / 2);
-  const sillas = (n) => `<div class="sillas">${'<i></i>'.repeat(Math.min(n, 6))}</div>`;
-  return `<button class="mesa ${m.forma} ${est}${min >= EXCEDIDO_MIN ? ' excedida' : ''}" data-m="${m.id}"
-      data-num="${esc(String(m.numero).toLowerCase())}" data-cap="${m.capacidad}" data-mia="${m.mozo_id === S.me.id ? 1 : 0}"
-      title="Mesa ${esc(m.numero)} · ${ESTADO_MESA[est]} · ${m.capacidad} personas · ${esc(m.mozo_nombre || 'sin mozo')}">
-    ${sillas(arriba)}
-    <span class="tablero">
-      ${m.mozo_id === S.me.id ? '<span class="mia" aria-label="Asignada a ti">★</span>' : ''}
-      <b>${esc(m.numero)}</b>
-      ${m.ocupada ? `<small>${dinero(m.por_cobrar)}</small><small class="t">${min >= EXCEDIDO_MIN ? '⚠ ' : ''}${duracion(min)}</small>` : `<small>${m.capacidad} pers.</small>`}
-    </span>
-    ${sillas(m.capacidad - arriba)}
-  </button>`;
-}
+// Posición en el plano: unidades donde el ancho del nivel mide 100 (alto del nivel = H)
+const enPlano = (o, H) => `left:${o.x}%;top:${(o.y / H) * 100}%;width:${o.ancho}%;height:${(o.alto / H) * 100}%`;
 
 async function vMesas(main) {
   const rol = S.me.rol;
-  const [mesas, comandas] = await Promise.all([api('GET', '/api/mesas'), api('GET', '/api/comandas?vista=por_cobrar')]);
+  const [mesas, comandas, plano] = await Promise.all([
+    api('GET', '/api/mesas'),
+    api('GET', '/api/comandas?vista=por_cobrar'),
+    api('GET', '/api/plano'),
+  ]);
   const activas = mesas.filter((m) => m.activa);
+  const porId = new Map(activas.map((m) => [m.id, m]));
+  const principal = (m) => porId.get(m.principal_id) || m;
   const pisos = [...new Set(activas.map((m) => m.piso))];
   if (!pisos.includes(S.salonPiso)) S.salonPiso = pisos[0];
   const modo = S.salonModo || 'mapa';
+  const editar = rol === 'admin' && S.salonEditar;
+  const unir = S.salonUnir; // Set de ids mientras se eligen mesas para unir
   const delPiso = activas.filter((m) => m.piso === S.salonPiso);
-  const zonas = [...new Set(delPiso.map((m) => m.zona))];
-  const cuenta = (e) => delPiso.filter((m) => estadoMesa(m) === e).length;
+  const elementos = plano.elementos.filter((e) => e.piso === S.salonPiso);
+  const H = Math.max(60, ...[...delPiso, ...elementos].map((o) => o.y + o.alto)) + 6;
+  const principales = delPiso.filter((m) => m.principal_id === m.id);
+  const cuenta = (e) => principales.filter((m) => estadoMesa(m) === e).length;
   const excedidas = activas
-    .filter((m) => m.ocupada && minutosDesde(m.ocupada_desde) >= EXCEDIDO_MIN)
+    .filter((m) => m.principal_id === m.id && m.ocupada && minutosDesde(m.ocupada_desde) >= EXCEDIDO_MIN)
     .sort((a, b) => a.ocupada_desde.localeCompare(b.ocupada_desde));
   const llevar = comandas.filter((c) => c.tipo === 'llevar');
-  const mias = activas.filter((m) => m.mozo_id === S.me.id).length;
+  const mias = principales.filter((m) => m.mozo_id === S.me.id).length;
+
+  const htmlMesa = (m) => {
+    const p = principal(m);
+    const min = p.ocupada ? minutosDesde(p.ocupada_desde) : 0;
+    const mostrarDatos = m.id === p.id && p.ocupada;
+    return `<button class="mesa-p ${estadoMesa(p)}${min >= EXCEDIDO_MIN ? ' excedida' : ''}${unir?.has(m.id) ? ' sel' : ''}"
+        data-m="${m.id}" data-mia="${p.mozo_id === S.me.id ? 1 : 0}" style="${enPlano(m, H)}"
+        title="Mesa ${esc(m.etiqueta)} · ${esc(m.piso)}">
+      ${p.mozo_id === S.me.id && m.id === p.id ? '<span class="mia" aria-label="Asignada a ti">★</span>' : ''}
+      <b>${esc(m.numero)}</b>
+      ${mostrarDatos ? `<small>${dinero(p.por_cobrar)}</small><small class="t">${min >= EXCEDIDO_MIN ? '⚠ ' : ''}${duracion(min)}</small>` : ''}
+    </button>`;
+  };
+  // Contorno y nombre ("10-11") de cada grupo de mesas unidas
+  const htmlUniones = () =>
+    principales
+      .map((p) => {
+        const g = delPiso.filter((m) => m.principal_id === p.id);
+        if (g.length < 2) return '';
+        const x = Math.min(...g.map((m) => m.x)) - 1;
+        const y = Math.min(...g.map((m) => m.y)) - 1;
+        const ancho = Math.max(...g.map((m) => m.x + m.ancho)) + 1 - x;
+        const alto = Math.max(...g.map((m) => m.y + m.alto)) + 1 - y;
+        return `<div class="union" style="${enPlano({ x, y, ancho, alto }, H)}"><span>${esc(p.etiqueta)}</span></div>`;
+      })
+      .join('');
+
+  const barraModo = editar
+    ? `<div class="aviso-modo"><b>Editando plano de ${esc(S.salonPiso)}:</b> arrastre las mesas y elementos. Toque una mesa y use "Girar" para cambiarla de horizontal a vertical.
+        <div class="fila"><button class="btn chico" id="girar" disabled>⟳ Girar</button><button class="btn chico" id="cancelar-modo">Cancelar</button><button class="btn chico primario" id="guardar-plano">Guardar plano</button></div></div>`
+    : unir
+      ? `<div class="aviso-modo"><b>Unir mesas:</b> toque las mesas que se van a juntar (${unir.size} elegidas).
+          <div class="fila"><button class="btn chico" id="cancelar-modo">Cancelar</button><button class="btn chico primario" id="confirmar-unir" ${unir.size < 2 ? 'disabled' : ''}>Unir ${esc(
+            [...unir].map((id) => porId.get(id)?.numero).sort((a, b) => a - b).join('-')
+          )}</button></div></div>`
+      : '';
 
   main.innerHTML = `
     <div class="salon">
@@ -1328,19 +1353,15 @@ async function vMesas(main) {
           <button data-modo="mapa" class="${modo === 'mapa' ? 'activo' : ''}">Mapa de mesas</button>
           <button data-modo="llevar" class="${modo === 'llevar' ? 'activo' : ''}">🥡 Para llevar${llevar.length ? ` (${llevar.length})` : ''}</button>
         </div>
-        ${modo === 'mapa' && pisos.length > 1 ? `<div class="segmento compacto">${pisos.map((p) => `<button data-piso="${esc(p)}" class="${p === S.salonPiso ? 'activo' : ''}">${esc(p)}</button>`).join('')}</div>` : ''}
         ${
           modo === 'mapa'
-            ? `<div class="buscador">
-                <input type="search" id="buscar-mesa" placeholder="Buscar mesa…" aria-label="Buscar mesa" value="${esc(S.salonBuscar || '')}">
-                <select id="tam-mesa" aria-label="Tamaño">${[['0', 'Cualquier tamaño'], ['2', '2+ personas'], ['4', '4+ personas'], ['6', '6+ personas']]
-                  .map(([v, t]) => `<option value="${v}" ${String(S.salonTam || 0) === v ? 'selected' : ''}>${t}</option>`)
-                  .join('')}</select>
-              </div>
-              ${rol === 'mozo' ? `<button class="btn chico ${S.filtroMesas === 'mias' ? 'primario' : ''}" id="mis-mesas">★ Mis mesas <span class="cuenta">${mias}</span></button>` : ''}`
+            ? `${pisos.length > 1 ? `<div class="segmento compacto">${pisos.map((p) => `<button data-piso="${esc(p)}" class="${p === S.salonPiso ? 'activo' : ''}">${esc(p)}</button>`).join('')}</div>` : ''}
+              ${!editar && !unir ? '<button class="btn chico" id="modo-unir">🔗 Unir mesas</button>' : ''}
+              ${rol === 'mozo' ? `<button class="btn chico ${S.filtroMesas === 'mias' ? 'primario' : ''}" id="mis-mesas">★ Mis mesas <span class="cuenta">${mias}</span></button>` : ''}
+              ${rol === 'admin' && !editar && !unir ? '<button class="btn chico" id="modo-editar">✏️ Editar plano</button>' : ''}
+              <div class="conteos"><span class="libre">Libre ${cuenta('libre')}</span><span class="ocupada">Ocupada ${cuenta('ocupada')}</span><span class="cobrar">Por cobrar ${cuenta('cobrar')}</span></div>`
             : ''
         }
-        ${modo === 'mapa' ? `<div class="conteos"><span class="libre">Libre ${cuenta('libre')}</span><span class="ocupada">Ocupada ${cuenta('ocupada')}</span><span class="cobrar">Por cobrar ${cuenta('cobrar')}</span></div>` : ''}
       </div>
       ${
         modo === 'llevar'
@@ -1348,61 +1369,158 @@ async function vMesas(main) {
               <button class="btn primario" onclick="ir('#/nueva?tipo=llevar')">＋ Nuevo pedido para llevar</button>
               ${llevar.length ? `<div class="grid">${llevar.map(tarjetaComanda).join('')}</div>` : '<div class="vacio">No hay pedidos para llevar pendientes.</div>'}
             </div>`
-          : `<div class="salon-cuerpo">
-              <div class="plano">${
-                zonas.length
-                  ? zonas.map((z) => `<section class="zona"><h4>${esc(z)}</h4><div class="mesas">${delPiso.filter((m) => m.zona === z).map(htmlMesa).join('')}</div></section>`).join('')
-                  : '<div class="vacio">No hay mesas. El administrador puede crearlas en Configuración → Mesas.</div>'
-              }</div>
+          : `${barraModo}
+            <div class="salon-cuerpo">
+              <div class="plano-nivel${editar ? ' editando' : ''}${unir ? ' uniendo' : ''}" style="aspect-ratio:100/${H}">
+                ${elementos.map((e) => `<div class="elem ${e.tipo}" data-e="${e.id}" style="${enPlano(e, H)}"><span>${esc(e.nombre)}</span></div>`).join('')}
+                ${editar ? '' : htmlUniones()}
+                ${delPiso.map(htmlMesa).join('') || '<div class="vacio">No hay mesas en este nivel.</div>'}
+              </div>
               <aside class="excedidas">
                 <h4>⚠ Tiempo excedido (${excedidas.length})</h4>
-                ${excedidas.map((m) => `<button class="tarjeta" data-m="${m.id}"><b>Mesa ${esc(m.numero)}</b><small>${esc(m.mozo_nombre || 'sin mozo')}</small><span class="t">${duracion(minutosDesde(m.ocupada_desde))}</span></button>`).join('') || `<div class="suave peq">Ninguna mesa pasa de ${EXCEDIDO_MIN} min.</div>`}
+                ${excedidas.map((m) => `<button class="tarjeta" data-m="${m.id}"><b>Mesa ${esc(m.etiqueta)}</b><small>${esc(m.piso)} · ${esc(m.mozo_nombre || 'sin mozo')}</small><span class="t">${duracion(minutosDesde(m.ocupada_desde))}</span></button>`).join('') || `<div class="suave peq">Ninguna mesa pasa de ${EXCEDIDO_MIN} min.</div>`}
               </aside>
             </div>
-            <div class="leyenda-salon">Leyenda: <span><i class="libre"></i>Libre</span><span><i class="ocupada"></i>Ocupada</span><span><i class="cobrar"></i>Por cobrar (todo entregado)</span><span><i class="excedida"></i>Tiempo excedido (+${EXCEDIDO_MIN} min)</span>${rol === 'mozo' ? '<span>★ Asignada a ti</span>' : ''}</div>`
+            <div class="leyenda-salon">Leyenda: <span><i class="libre"></i>Libre</span><span><i class="ocupada"></i>Ocupada</span><span><i class="cobrar"></i>Por cobrar (todo entregado)</span><span><i class="excedida"></i>Tiempo excedido (+${EXCEDIDO_MIN} min)</span><span><i class="unidas"></i>Mesas unidas</span>${rol === 'mozo' ? '<span>★ Asignada a ti</span>' : ''}</div>`
       }
     </div>`;
 
-  // Los filtros atenúan las mesas en vez de ocultarlas, así el plano no se descoloca
-  const filtrar = () => {
-    const q = (S.salonBuscar || '').trim().toLowerCase();
-    const tam = Number(S.salonTam || 0);
-    const soloMias = rol === 'mozo' && S.filtroMesas === 'mias';
-    $$('.plano .mesa', main).forEach((el) =>
-      el.classList.toggle('tenue', (q && !el.dataset.num.includes(q)) || el.dataset.cap < tam || (soloMias && el.dataset.mia !== '1'))
-    );
+  const otraVez = () => vMesas(main);
+  if (rol === 'mozo' && S.filtroMesas === 'mias')
+    $$('.mesa-p', main).forEach((el) => el.classList.toggle('tenue', el.dataset.mia !== '1'));
+  $$('[data-modo]', main).forEach((b) => (b.onclick = () => ((S.salonModo = b.dataset.modo), (S.salonUnir = null), (S.salonEditar = false), otraVez())));
+  $$('[data-piso]', main).forEach((b) => (b.onclick = () => ((S.salonPiso = b.dataset.piso), (S.salonUnir = unir && new Set()), otraVez())));
+  const on = (sel, fn) => {
+    const el = $(sel, main);
+    if (el) el.onclick = fn;
   };
-  filtrar();
-  $$('[data-modo]', main).forEach((b) => (b.onclick = () => ((S.salonModo = b.dataset.modo), vMesas(main))));
-  $$('[data-piso]', main).forEach((b) => (b.onclick = () => ((S.salonPiso = b.dataset.piso), vMesas(main))));
-  const bm = $('#buscar-mesa', main);
-  if (bm) bm.oninput = () => ((S.salonBuscar = bm.value), filtrar());
-  const tm = $('#tam-mesa', main);
-  if (tm) tm.onchange = () => ((S.salonTam = tm.value), filtrar());
-  const mm = $('#mis-mesas', main);
-  if (mm) mm.onclick = () => ((S.filtroMesas = S.filtroMesas === 'mias' ? 'todas' : 'mias'), vMesas(main));
+  on('#mis-mesas', () => ((S.filtroMesas = S.filtroMesas === 'mias' ? 'todas' : 'mias'), otraVez()));
+  on('#modo-unir', () => ((S.salonUnir = new Set()), otraVez()));
+  on('#modo-editar', () => ((S.salonEditar = true), otraVez()));
+  on('#cancelar-modo', () => ((S.salonUnir = null), (S.salonEditar = false), otraVez()));
+  on('#confirmar-unir', async () => {
+    try {
+      const r = await api('POST', '/api/mesas/unir', { ids: [...unir] });
+      S.salonUnir = null;
+      toast(`Mesas unidas: ${r.etiqueta}`, 'ok');
+      otraVez();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  });
+  // mientras se edita o se eligen mesas, no se recarga en vivo (se perdería lo que se está haciendo)
+  S.vista.escucha = editar || unir ? [] : ['mesas', 'comandas'];
   S.timers.forEach(clearInterval);
-  S.timers = [setInterval(() => recargarVista(), 60000)]; // ponytail: refresca los minutos cada 60 s
+  S.timers = editar || unir ? [] : [setInterval(() => recargarVista(), 60000)]; // ponytail: refresca los minutos cada 60 s
+
+  if (editar) return editarPlano(main, H, otraVez);
+
   $$('[data-m]', main).forEach(
     (el) =>
       (el.onclick = () => {
-        const m = mesas.find((x) => x.id === Number(el.dataset.m));
-        const cs = comandas.filter((c) => c.mesa_id === m.id);
-        if (!cs.length) return ir(`#/nueva?mesa=${m.id}`);
+        const m = porId.get(Number(el.dataset.m));
+        if (unir) {
+          // se elige/quita la mesa (y todo su grupo, si ya estaba unida)
+          const g = activas.filter((x) => x.principal_id === m.principal_id).map((x) => x.id);
+          const quitar = unir.has(m.id);
+          g.forEach((id) => (quitar ? unir.delete(id) : unir.add(id)));
+          return otraVez();
+        }
+        const p = principal(m);
+        const grupo = activas.filter((x) => x.principal_id === p.id);
+        const cs = comandas.filter((c) => c.mesa_id === p.id);
+        const separar = grupo.length > 1 ? `<button class="btn bloque" id="separar">✂️ Separar mesas ${esc(p.etiqueta)}</button>` : '';
+        if (!cs.length && !separar) return ir(`#/nueva?mesa=${p.id}`);
         const total = cs.reduce((s, c) => s + c.total, 0);
         const modal = abrirModal(`
           <div class="pila">
-            <div class="fila entre"><h3>Mesa ${esc(m.numero)}</h3><button class="btn chico" data-x>✕</button></div>
-            <div class="suave">Mozo: ${esc(m.mozo_nombre || '-')} · Capacidad ${m.capacidad} · Consumo: <b>${dinero(total)}</b></div>
-            ${puede('admin', 'caja') ? `<button class="btn acento bloque" id="cobrar-mesa">💵 Cobrar mesa completa (${dinero(total)})</button>` : ''}
+            <div class="fila entre"><h3>Mesa ${esc(p.etiqueta)} <span class="suave peq">· ${esc(p.piso)}</span></h3><button class="btn chico" data-x>✕</button></div>
+            <div class="suave">Mozo: ${esc(p.mozo_nombre || '-')}${cs.length ? ` · Consumo: <b>${dinero(total)}</b>` : ' · Libre'}</div>
+            ${cs.length && puede('admin', 'caja') ? `<button class="btn acento bloque" id="cobrar-mesa">💵 Cobrar mesa completa (${dinero(total)})</button>` : ''}
             ${cs.map(tarjetaComanda).join('')}
-            <button class="btn primario bloque" data-accion="nueva-comanda" data-mesa="${m.id}">＋ Agregar otra comanda a esta mesa</button>
+            <button class="btn primario bloque" data-accion="nueva-comanda" data-mesa="${p.id}">＋ ${cs.length ? 'Agregar otra comanda' : 'Nueva comanda'}</button>
+            ${separar}
           </div>`);
         $('[data-x]', modal).onclick = cerrarModal;
         const cm = $('#cobrar-mesa', modal);
-        if (cm) cm.onclick = () => abrirCobro(cs, `Cobrar mesa ${m.numero}`);
+        if (cm) cm.onclick = () => abrirCobro(cs, `Cobrar mesa ${p.etiqueta}`);
+        const sp = $('#separar', modal);
+        if (sp)
+          sp.onclick = async () => {
+            try {
+              await api('POST', `/api/mesas/${p.id}/separar`);
+              cerrarModal();
+              toast('Mesas separadas', 'ok');
+            } catch (e) {
+              toast(e.message, 'error');
+            }
+          };
       })
   );
+}
+
+// Modo edición del plano (admin): arrastrar mesas y elementos, girar mesas y guardar
+function editarPlano(main, H, alTerminar) {
+  const plano = $('.plano-nivel', main);
+  const cambios = new Map(); // "m12" / "e3" -> { id, x, y, ancho, alto }
+  let elegido = null;
+  const datos = (el) => {
+    const clave = el.dataset.m ? `m${el.dataset.m}` : `e${el.dataset.e}`;
+    if (!cambios.has(clave)) {
+      const st = el.style;
+      cambios.set(clave, {
+        id: Number(el.dataset.m || el.dataset.e),
+        x: parseFloat(st.left),
+        y: (parseFloat(st.top) * H) / 100,
+        ancho: parseFloat(st.width),
+        alto: (parseFloat(st.height) * H) / 100,
+      });
+    }
+    return cambios.get(clave);
+  };
+  const pintar = (el, d) => (el.style.cssText = enPlano(d, H));
+  const redondear = (v) => Math.round(v * 2) / 2; // se alinea a media unidad
+  $$('.mesa-p, .elem', plano).forEach((el) => {
+    el.onclick = null;
+    el.onpointerdown = (ev) => {
+      ev.preventDefault();
+      if (elegido) elegido.classList.remove('elegido');
+      elegido = el;
+      el.classList.add('elegido');
+      $('#girar', main).disabled = !el.dataset.m;
+      const d = datos(el);
+      const unidad = plano.getBoundingClientRect().width / 100; // px por unidad
+      const inicio = { px: ev.clientX, py: ev.clientY, x: d.x, y: d.y };
+      el.setPointerCapture(ev.pointerId);
+      el.onpointermove = (e) => {
+        d.x = redondear(Math.max(0, Math.min(100 - d.ancho, inicio.x + (e.clientX - inicio.px) / unidad)));
+        d.y = redondear(Math.max(0, Math.min(H - d.alto, inicio.y + (e.clientY - inicio.py) / unidad)));
+        pintar(el, d);
+      };
+      el.onpointerup = () => (el.onpointermove = null);
+    };
+  });
+  $('#girar', main).onclick = () => {
+    if (!elegido) return;
+    const d = datos(elegido);
+    [d.ancho, d.alto] = [d.alto, d.ancho];
+    d.x = Math.min(d.x, 100 - d.ancho);
+    pintar(elegido, d);
+  };
+  $('#guardar-plano', main).onclick = async () => {
+    const lista = [...cambios.entries()];
+    try {
+      await api('PUT', '/api/plano', {
+        mesas: lista.filter(([k]) => k[0] === 'm').map(([, v]) => v),
+        elementos: lista.filter(([k]) => k[0] === 'e').map(([, v]) => v),
+      });
+      S.salonEditar = false;
+      toast('Plano guardado', 'ok');
+      alTerminar();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  };
 }
 
 // ---------- Cartas: menú del día (cambia a diario) + extras (carta fija) ----------
@@ -1855,11 +1973,9 @@ async function adminMesas(cont) {
   const [mesas, mozos] = await Promise.all([api('GET', '/api/mesas'), api('GET', '/api/mozos')]);
   const campos = [
     { n: 'numero', l: 'Número o nombre de mesa', req: true },
-    { n: 'capacidad', l: 'Capacidad (personas)', t: 'number', paso: '1', def: 4, ayuda: 'Las rectangulares del nivel 2 admiten hasta 5' },
+    { n: 'capacidad', l: 'Capacidad (personas)', t: 'number', paso: '1', def: 4 },
     { n: 'mozo_id', l: 'Mozo asignado', t: 'select', op: [['', '— Sin asignar —'], ...mozos.map((m) => [m.id, m.nombre])] },
-    { n: 'piso', l: 'Nivel', def: 'Nivel 1', lista: [...new Set(mesas.map((m) => m.piso))], ayuda: 'Ej.: Nivel 1, Nivel 2' },
-    { n: 'zona', l: 'Zona dentro del nivel', def: 'Salón', lista: [...new Set(mesas.map((m) => m.zona))], ayuda: 'Opcional: agrupa mesas dentro del nivel (ej.: Ventana)' },
-    { n: 'forma', l: 'Forma', t: 'select', op: [['rectangular', 'Rectangular'], ['cuadrada', 'Cuadrada'], ['redonda', 'Redonda']], def: 'rectangular' },
+    { n: 'piso', l: 'Nivel', def: 'Nivel 1', lista: [...new Set(mesas.map((m) => m.piso))], ayuda: 'La ubicación en el plano se ajusta en Salón → Editar plano' },
     { n: 'activa', l: 'Activa', t: 'check', def: true },
   ];
   cont.innerHTML = `
@@ -1870,7 +1986,7 @@ async function adminMesas(cont) {
         .map(
           (m) => `<div class="item">
             <div class="crecer"><b>Mesa ${esc(m.numero)}</b> ${m.ocupada ? '<span class="etiqueta llevar">OCUPADA</span>' : ''} ${!m.activa ? '<span class="etiqueta agotado">INACTIVA</span>' : ''}
-              <div class="suave peq">${m.capacidad} personas · ${esc(m.piso)} · ${esc(m.zona)} · ${m.forma}</div></div>
+              <div class="suave peq">${m.capacidad} personas · ${esc(m.piso)}</div></div>
             <select class="entrada" style="width:auto;max-width:45%" data-asignar="${m.id}">
               <option value="">Sin mozo</option>${mozos.map((z) => `<option value="${z.id}" ${z.id === m.mozo_id ? 'selected' : ''}>${esc(z.nombre)}</option>`).join('')}
             </select>

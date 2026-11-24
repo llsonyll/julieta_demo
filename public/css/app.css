@@ -390,47 +390,59 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 /* ---------- salón: plano de mesas ---------- */
 .salon-barra { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
 .segmento.compacto button { padding: 7px 12px; font-size: .9rem; white-space: nowrap; }
-.buscador { display: flex; align-items: center; border: 1px solid var(--borde); border-radius: 10px; background: #fff; flex: 1; min-width: 220px; }
-.buscador input { border: 0; background: none; padding: 9px 12px; flex: 1; min-width: 0; outline: none; }
-.buscador select { border: 0; background: none; padding: 9px 8px; color: var(--suave); font-size: .85rem; }
 .btn .cuenta { min-width: 22px; height: 22px; font-size: .75rem; background: #ccfbf1; color: #0f766e; }
 .conteos { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 .conteos span { padding: 3px 10px; border-radius: 20px; font-size: .78rem; font-weight: 600; }
 .conteos .libre { background: #dcfce7; color: #15803d; }
 .conteos .ocupada { background: #fee2e2; color: #b91c1c; }
 .conteos .cobrar { background: #fef3c7; color: #b45309; }
+.aviso-modo {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between;
+  background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; font-size: .9rem;
+}
 
 .salon-cuerpo { display: grid; grid-template-columns: 1fr 230px; gap: 14px; align-items: start; }
 @media (max-width: 899px) { .salon-cuerpo { grid-template-columns: 1fr; } }
-.plano { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
-.zona { border: 1px solid #99f6e4; background: #f0fdfa80; border-radius: 12px; padding: 12px 14px 16px; flex: 1 1 300px; }
-.zona:nth-child(even) { border-color: #fde68a; background: #fefce880; }
-.zona h4 { margin: 0 0 10px; font-size: .75rem; letter-spacing: .6px; text-transform: uppercase; color: var(--suave); }
-.zona .mesas { display: flex; flex-wrap: wrap; gap: 14px 18px; }
 
-.mesa { background: none; border: 0; padding: 0; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px; color: #fff; transition: opacity .15s; }
-.mesa .sillas { display: flex; gap: 8px; height: 10px; }
-.mesa .sillas i { width: 18px; height: 10px; border-radius: 5px; background: #cbd5e1; }
-.mesa .tablero {
-  position: relative; width: 92px; height: 82px; border-radius: 10px; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: 1px; border: 2px solid transparent; box-shadow: var(--sombra);
+/* plano a escala: todo se ubica en % del nivel */
+.plano-nivel { position: relative; width: 100%; max-width: 760px; background: #fff; border: 2px solid #334155; border-radius: 14px; }
+.plano-nivel > * { position: absolute; box-sizing: border-box; }
+.elem { display: grid; place-items: center; border-radius: 8px; font-size: .72rem; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: .5px; overflow: hidden; }
+.elem span { padding: 2px; text-align: center; }
+.elem.escalera { background: #fecaca; border: 1px solid #f87171; }
+.elem.servicio { background: #fef08a; border: 1px solid #eab308; }
+.elem.puerta { background: #bbf7d0; border: 1px solid #22c55e; }
+.elem.ventana { background: #93c5fd; border: 1px solid #3b82f6; }
+.elem.puerta span, .elem.ventana span { display: none; }
+
+.mesa-p {
+  border: 2px solid transparent; border-radius: 10px; color: #fff; cursor: pointer; padding: 2px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  box-shadow: var(--sombra); font: inherit; transition: opacity .15s; z-index: 2;
 }
-.mesa.rectangular .tablero { width: 150px; }
-.mesa.redonda .tablero { width: 92px; height: 92px; border-radius: 50%; }
-.mesa .tablero b { font-size: 1.15rem; }
-.mesa .tablero small { font-size: .7rem; opacity: .95; }
-.mesa .tablero .t { font-family: ui-monospace, Menlo, Consolas, monospace; }
-.mesa.libre .tablero { background: #16a34a; border-color: #15803d; }
-.mesa.ocupada .tablero { background: #ef4444; border-color: #dc2626; }
-.mesa.cobrar .tablero { background: #f59e0b; border-color: #d97706; }
-.mesa.excedida .tablero { outline: 3px solid #f59e0b; outline-offset: 2px; }
-.mesa.cobrar.excedida .tablero { outline-color: #b45309; }
-.mesa .mia {
+.mesa-p b { font-size: 1.15rem; line-height: 1.1; }
+.mesa-p small { font-size: .68rem; line-height: 1.15; }
+.mesa-p .t { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.mesa-p.libre { background: #16a34a; border-color: #15803d; }
+.mesa-p.ocupada { background: #ef4444; border-color: #dc2626; }
+.mesa-p.cobrar { background: #f59e0b; border-color: #d97706; }
+.mesa-p.excedida { outline: 3px solid #f59e0b; outline-offset: 2px; }
+.mesa-p.cobrar.excedida { outline-color: #b45309; }
+.mesa-p .mia {
   position: absolute; top: -8px; right: -8px; width: 22px; height: 22px; border-radius: 50%;
   background: #0f766e; color: #fff; font-size: .7rem; display: grid; place-items: center; border: 2px solid #fff;
 }
-.mesa.tenue { opacity: .25; }
-.mesa:active .tablero { transform: scale(.97); }
+.mesa-p.tenue { opacity: .3; }
+.uniendo .mesa-p { opacity: .55; }
+.uniendo .mesa-p.sel { opacity: 1; outline: 3px solid #0f766e; outline-offset: 3px; }
+.union { border: 2px dashed #0f766e; border-radius: 12px; background: #0f766e14; z-index: 1; pointer-events: none; }
+.union span {
+  position: absolute; top: -11px; left: 8px; background: #0f766e; color: #fff; font-size: .72rem; font-weight: 700;
+  padding: 1px 8px; border-radius: 10px; white-space: nowrap;
+}
+.editando { background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 2% 2%; }
+.editando .mesa-p, .editando .elem { cursor: grab; touch-action: none; user-select: none; }
+.editando .elegido { outline: 3px solid #2563eb; outline-offset: 2px; z-index: 3; }
 
 .excedidas { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .excedidas h4 { margin: 0; font-size: .85rem; color: #b45309; }
@@ -445,6 +457,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .leyenda-salon i.ocupada { background: #ef4444; }
 .leyenda-salon i.cobrar { background: #f59e0b; }
 .leyenda-salon i.excedida { border: 2px solid #f59e0b; }
+.leyenda-salon i.unidas { border: 2px dashed #0f766e; }
 
 /* ---------- cartas ---------- */
 .carta-resumen { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 190px; text-align: left; font: inherit; color: inherit; cursor: pointer; }

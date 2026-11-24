@@ -160,24 +160,60 @@ agregarColumna('comanda_items', 'guarnicion_defecto', "TEXT NOT NULL DEFAULT ''"
 agregarColumna('comanda_items', 'guarnicion_eleccion_id', 'INTEGER');
 agregarColumna('comanda_items', 'guarnicion_eleccion', "TEXT NOT NULL DEFAULT ''");
 agregarColumna('usuarios', 'pin_hash', 'TEXT');
-// Distribución del local: nivel 1 con 4 mesas (1-4), nivel 2 con 10 (5-14), todas rectangulares
-const MESAS_LOCAL = Array.from({ length: 14 }, (_, i) => ({ numero: String(i + 1), piso: i < 4 ? 'Nivel 1' : 'Nivel 2' }));
-const sinDistribucion = !db.prepare('PRAGMA table_info(mesas)').all().some((c) => c.name === 'piso');
 agregarColumna('mesas', 'piso', "TEXT NOT NULL DEFAULT 'Nivel 1'");
 agregarColumna('mesas', 'zona', "TEXT NOT NULL DEFAULT 'Salón'");
 agregarColumna('mesas', 'forma', "TEXT NOT NULL DEFAULT 'rectangular'");
-// Bases anteriores (sin distribución, o con los valores por defecto de la primera versión del plano):
-// se reparten las mesas existentes en los dos niveles y se crean las que falten
-const conDefectoViejo =
-  !db.prepare("SELECT 1 FROM mesas WHERE piso <> 'Piso 1' OR zona <> 'Salón principal' OR forma <> 'cuadrada'").get();
-if ((sinDistribucion || conDefectoViejo) && db.prepare('SELECT COUNT(*) AS n FROM mesas').get().n > 0) {
-  db.exec("UPDATE mesas SET zona = 'Salón', forma = 'rectangular'");
-  db.exec(`UPDATE mesas SET
-    piso = CASE WHEN CAST(numero AS INTEGER) BETWEEN 1 AND 4 THEN 'Nivel 1' ELSE 'Nivel 2' END,
-    capacidad = CASE WHEN CAST(numero AS INTEGER) BETWEEN 1 AND 4 THEN 4 ELSE MIN(capacidad, 5) END`);
+// Plano: posición y tamaño en unidades donde el ancho del nivel mide 100
+agregarColumna('mesas', 'x', 'REAL NOT NULL DEFAULT 2');
+agregarColumna('mesas', 'y', 'REAL NOT NULL DEFAULT 2');
+agregarColumna('mesas', 'ancho', 'REAL NOT NULL DEFAULT 20');
+agregarColumna('mesas', 'alto', 'REAL NOT NULL DEFAULT 15');
+// Unión temporal: las mesas unidas apuntan a la principal (la de menor número)
+agregarColumna('mesas', 'unida_a', 'INTEGER');
+// Número de mesa con el que se tomó la comanda ("10-11" si estaban unidas)
+agregarColumna('comandas', 'mesa_etiqueta', "TEXT NOT NULL DEFAULT ''");
+db.exec(`CREATE TABLE IF NOT EXISTS plano_elementos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  piso TEXT NOT NULL,
+  nombre TEXT NOT NULL,
+  tipo TEXT NOT NULL DEFAULT 'muro',
+  x REAL NOT NULL, y REAL NOT NULL, ancho REAL NOT NULL, alto REAL NOT NULL
+)`);
+
+// Plano inicial tomado del croquis del local: [numero, nivel, x, y, ancho, alto]
+const PLANO_MESAS = [
+  ['1', 'Nivel 1', 45.5, 40, 26.7, 16.7], ['2', 'Nivel 1', 6.8, 38, 26.7, 16.7],
+  ['3', 'Nivel 1', 46, 8.2, 26.7, 16.7], ['4', 'Nivel 1', 6.7, 8.8, 26.7, 16.7],
+  ['5', 'Nivel 2', 71.7, 17.3, 19.5, 15.3], ['6', 'Nivel 2', 72.3, 1.7, 19.5, 15.3],
+  ['7', 'Nivel 2', 23.7, 6, 19.5, 15.3], ['8', 'Nivel 2', 3.7, 5.8, 19.5, 15.3],
+  ['9', 'Nivel 2', 2.2, 31.5, 19.5, 15.3], ['10', 'Nivel 2', 2.3, 56.8, 19.5, 15.3],
+  ['11', 'Nivel 2', 2, 82.2, 19.5, 15.3], ['12', 'Nivel 2', 2.5, 108.7, 19.5, 15.3],
+  ['13', 'Nivel 2', 37.2, 113.5, 19.5, 15.3], ['14', 'Nivel 2', 75.5, 108.8, 19.5, 15.3],
+  ['15', 'Nivel 2', 75.3, 80.5, 19.5, 15.3],
+];
+// [nivel, nombre, tipo, x, y, ancho, alto]; tipo: escalera | servicio | puerta | ventana
+const PLANO_ELEMENTOS = [
+  ['Nivel 1', 'Escaleras', 'escalera', 76.7, 7.7, 21.3, 39.7],
+  ['Nivel 1', 'Puerta', 'puerta', 95.2, 48.7, 3, 18],
+  ['Nivel 1', 'SSHH', 'servicio', 2.7, 92, 26.2, 10],
+  ['Nivel 1', 'Puerta cocina', 'puerta', 31.3, 99, 21.7, 2.7],
+  ['Nivel 1', 'Caja', 'servicio', 55.8, 83.2, 40.8, 19.3],
+  ['Nivel 2', 'Escaleras', 'escalera', 72.2, 36.5, 22, 37.3],
+  ['Nivel 2', 'Ventana', 'ventana', 98.3, 9.3, 1.5, 21.7],
+  ['Nivel 2', 'Ventana', 'ventana', 98.3, 77.7, 1.5, 21.3],
+];
+function aplicarPlanoInicial() {
   const ins = db.prepare("INSERT OR IGNORE INTO mesas (numero, capacidad, piso, zona, forma) VALUES (?, 4, ?, 'Salón', 'rectangular')");
-  for (const m of MESAS_LOCAL) ins.run(m.numero, m.piso);
+  const pos = db.prepare('UPDATE mesas SET piso=?, x=?, y=?, ancho=?, alto=? WHERE numero=?');
+  for (const [numero, piso, x, y, ancho, alto] of PLANO_MESAS) {
+    ins.run(numero, piso);
+    pos.run(piso, x, y, ancho, alto, numero);
+  }
+  const insE = db.prepare('INSERT INTO plano_elementos (piso, nombre, tipo, x, y, ancho, alto) VALUES (?,?,?,?,?,?,?)');
+  for (const e of PLANO_ELEMENTOS) insE.run(...e);
 }
+// Bases anteriores: se ubican las mesas según el croquis (y se crean las que falten) una sola vez
+if (!db.prepare('SELECT 1 FROM plano_elementos').get() && db.prepare('SELECT 1 FROM mesas').get()) aplicarPlanoInicial();
 // El menú antes se guardaba con su fecha en productos: se pasa a menu_dia
 db.exec(`INSERT OR IGNORE INTO menu_dia (fecha, producto_id)
          SELECT fecha, id FROM productos WHERE tipo = 'menu' AND fecha IS NOT NULL`);
@@ -248,8 +284,9 @@ function sembrar() {
     insU.run('Caja', 'caja1', hashPassword(PIN_INICIAL), 'caja', ahora());
     insU.run('Cocina', 'cocina1', hashPassword(PIN_INICIAL), 'cocina', ahora());
 
-    const insM = db.prepare("INSERT INTO mesas (numero, capacidad, mozo_id, piso, zona, forma) VALUES (?,4,?,?,'Salón','rectangular')");
-    MESAS_LOCAL.forEach((m, i) => insM.run(m.numero, mozos[i < 4 ? 0 : i < 9 ? 1 : 2], m.piso));
+    aplicarPlanoInicial();
+    const asignar = db.prepare('UPDATE mesas SET mozo_id = ? WHERE numero = ?');
+    PLANO_MESAS.forEach(([numero], i) => asignar.run(mozos[i < 4 ? 0 : i < 10 ? 1 : 2], numero));
 
     // Los platos y guarniciones se cargan desde carta/platos-tradicionales.json (ver server/carta-inicial.js)
   });

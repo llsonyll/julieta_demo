@@ -295,7 +295,7 @@ app.get(
 
 // ---------------- mesas ----------------
 function listarMesas() {
-  return db
+  const mesas = db
     .prepare(
       `SELECT m.*, u.nombre AS mozo_nombre,
         (SELECT COUNT(*) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
@@ -311,6 +311,34 @@ function listarMesas() {
     )
     .all(hoy(), hoy(), hoy(), hoy())
     .map((m) => ({ ...m, ocupada: m.comandas_abiertas > 0 }));
+  const porId = new Map(mesas.map((m) => [m.id, m]));
+  for (const m of mesas) m.principal_id = m.unida_a && porId.has(m.unida_a) ? m.unida_a : m.id;
+  for (const m of mesas)
+    m.etiqueta = mesas
+      .filter((x) => x.principal_id === m.principal_id)
+      .map((x) => x.numero)
+      .join('-');
+  return mesas;
+}
+
+// "10-11" si la mesa está unida, si no su número
+function etiquetaGrupo(principalId) {
+  return db
+    .prepare('SELECT numero FROM mesas WHERE id = ? OR unida_a = ? ORDER BY CAST(numero AS INTEGER), numero')
+    .all(principalId, principalId)
+    .map((r) => r.numero)
+    .join('-');
+}
+// Las comandas abiertas de la mesa principal muestran la etiqueta del grupo
+function refrescarEtiquetas(principalId) {
+  db.prepare("UPDATE comandas SET mesa_etiqueta = ? WHERE mesa_id = ? AND pagada = 0 AND estado <> 'cancelado'").run(
+    etiquetaGrupo(principalId),
+    principalId
+  );
+}
+function separarGrupo(principalId) {
+  db.prepare('UPDATE mesas SET unida_a = NULL WHERE unida_a = ?').run(principalId);
+  refrescarEtiquetas(principalId);
 }
 
 // Todos ven todas las mesas: cualquier mozo puede atender la mesa de otro.
@@ -364,6 +392,76 @@ app.put(
   })
 );
 
+// Unir mesas (temporal): no cambia sus números, se muestran como "10-11" y comparten cuenta
+app.post(
+  '/api/mesas/unir',
+  rol('admin', 'mozo', 'caja'),
+  ruta((req) => {
+    const ids = listaIds(req.body.ids);
+    const todas = listarMesas().filter((m) => m.activa);
+    const elegidas = todas.filter((m) => ids.includes(m.id));
+    if (elegidas.length !== ids.length) fail(400, 'Mesa no encontrada');
+    if (new Set(elegidas.map((m) => m.piso)).size > 1) fail(400, 'Solo se pueden unir mesas del mismo nivel');
+    // si alguna ya estaba unida, entra todo su grupo
+    const grupos = new Set(elegidas.map((m) => m.principal_id));
+    const miembros = todas.filter((m) => grupos.has(m.principal_id));
+    if (miembros.length < 2) fail(400, 'Elija al menos dos mesas');
+    const principal = miembros[0]; // listarMesas ya viene ordenada por número
+    const otras = miembros.slice(1).map((m) => m.id);
+    tx(() => {
+      for (const m of miembros) db.prepare('UPDATE mesas SET unida_a = ? WHERE id = ?').run(m.id === principal.id ? null : principal.id, m.id);
+      // las comandas abiertas de las otras mesas pasan a la principal
+      db.prepare(
+        `UPDATE comandas SET mesa_id = ? WHERE pagada = 0 AND estado <> 'cancelado' AND mesa_id IN (${otras.map(() => '?').join(',')})`
+      ).run(principal.id, ...otras);
+      refrescarEtiquetas(principal.id);
+    });
+    emitir('mesas');
+    emitir('comandas', { accion: 'mesas' });
+    return { ok: true, etiqueta: etiquetaGrupo(principal.id) };
+  })
+);
+
+app.post(
+  '/api/mesas/:id/separar',
+  rol('admin', 'mozo', 'caja'),
+  ruta((req) => {
+    const m = db.prepare('SELECT id, unida_a FROM mesas WHERE id = ?').get(Number(req.params.id));
+    if (!m) fail(404, 'Mesa no encontrada');
+    separarGrupo(m.unida_a || m.id);
+    emitir('mesas');
+    emitir('comandas', { accion: 'mesas' });
+    return { ok: true };
+  })
+);
+
+// Plano: elementos fijos (escaleras, caja...) y guardado de posiciones
+app.get(
+  '/api/plano',
+  ruta(() => ({ elementos: db.prepare('SELECT * FROM plano_elementos ORDER BY id').all() }))
+);
+
+app.put(
+  '/api/plano',
+  rol('admin'),
+  ruta((req) => {
+    const num = (v, min, max) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) fail(400, 'Posición inválida');
+      return Math.max(min, Math.min(max, Math.round(n * 10) / 10));
+    };
+    const pos = (o) => [num(o.x, 0, 100), num(o.y, 0, 300), num(o.ancho, 1, 100), num(o.alto, 1, 300), Number(o.id)];
+    tx(() => {
+      const um = db.prepare('UPDATE mesas SET x=?, y=?, ancho=?, alto=? WHERE id=?');
+      for (const m of req.body.mesas || []) um.run(...pos(m));
+      const ue = db.prepare('UPDATE plano_elementos SET x=?, y=?, ancho=?, alto=? WHERE id=?');
+      for (const e of req.body.elementos || []) ue.run(...pos(e));
+    });
+    emitir('mesas');
+    return { ok: true };
+  })
+);
+
 app.delete(
   '/api/mesas/:id',
   rol('admin'),
@@ -375,6 +473,7 @@ app.delete(
       return { ok: true, desactivada: true };
     }
     db.prepare('DELETE FROM mesas WHERE id = ?').run(id);
+    db.prepare('UPDATE mesas SET unida_a = NULL WHERE unida_a = ?').run(id);
     emitir('mesas');
     return { ok: true };
   })
@@ -613,7 +712,7 @@ app.post(
 
 // ---------------- comandas ----------------
 const SQL_COMANDA = `
-  SELECT c.*, m.numero AS mesa_numero, u.nombre AS mozo_nombre, m.mozo_id AS mesa_mozo_id,
+  SELECT c.*, COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero) AS mesa_numero, m.piso AS mesa_piso, u.nombre AS mozo_nombre, m.mozo_id AS mesa_mozo_id,
     co.metodo AS metodo_pago,
     (SELECT h.fecha FROM comanda_historial h WHERE h.comanda_id = c.id AND h.estado = 'enviado_cocina'
        ORDER BY h.id DESC LIMIT 1) AS enviado_en
@@ -706,13 +805,13 @@ function prepararItems(itemsBody, tipo) {
     // Guarnición base: la del plato, salvo que se cambie por otra o se quite (null)
     let base = { id: null, nombre: '' };
     const defecto = p.guarnicion_base || '';
-    if (p.guarnicion_base_id) {
-      if (it.guarnicion_base_id === undefined) base = { id: p.guarnicion_base_id, nombre: defecto };
-      else if (it.guarnicion_base_id) {
-        const g = getG.get(Number(it.guarnicion_base_id));
-        if (!g) fail(400, `Guarnición inválida en "${p.nombre}"`);
-        base = { id: g.id, nombre: g.nombre };
-      }
+    // Todo plato admite una guarnición opcional (sin guarnición por defecto = ninguna)
+    if (it.guarnicion_base_id === undefined) {
+      if (p.guarnicion_base_id) base = { id: p.guarnicion_base_id, nombre: defecto };
+    } else if (it.guarnicion_base_id) {
+      const g = getG.get(Number(it.guarnicion_base_id));
+      if (!g) fail(400, `Guarnición inválida en "${p.nombre}"`);
+      base = { id: g.id, nombre: g.nombre };
     }
     // Guarnición a elección (solo si el plato la lleva)
     let eleccion = { id: null, nombre: '' };
@@ -742,10 +841,11 @@ function validarCabecera(b) {
   const tipo = b.tipo === 'llevar' ? 'llevar' : 'local';
   let mesa_id = null;
   if (tipo === 'local') {
-    mesa_id = Number(b.mesa_id);
-    if (!db.prepare('SELECT 1 FROM mesas WHERE id = ? AND activa = 1').get(mesa_id)) fail(400, 'Seleccione una mesa válida');
+    const mesa = db.prepare('SELECT id, unida_a FROM mesas WHERE id = ? AND activa = 1').get(Number(b.mesa_id));
+    if (!mesa) fail(400, 'Seleccione una mesa válida');
+    mesa_id = mesa.unida_a || mesa.id; // en mesas unidas, la comanda va a la principal
   }
-  return { tipo, mesa_id, cliente: texto(b.cliente, 80), nota: texto(b.nota, 300) };
+  return { tipo, mesa_id, mesa_etiqueta: mesa_id ? etiquetaGrupo(mesa_id) : '', cliente: texto(b.cliente, 80), nota: texto(b.nota, 300) };
 }
 
 function guardarItems(comandaId, items) {
@@ -801,10 +901,10 @@ app.post(
       const { sig } = db.prepare('SELECT COALESCE(MAX(numero_dia),0)+1 AS sig FROM comandas WHERE fecha = ?').get(fecha);
       const nuevoId = db
         .prepare(
-          `INSERT INTO comandas (numero_dia, fecha, tipo, mesa_id, mozo_id, cliente, nota, estado, creado_en, actualizado_en)
-           VALUES (?,?,?,?,?,?,?, 'generado', ?, ?)`
+          `INSERT INTO comandas (numero_dia, fecha, tipo, mesa_id, mesa_etiqueta, mozo_id, cliente, nota, estado, creado_en, actualizado_en)
+           VALUES (?,?,?,?,?,?,?,?, 'generado', ?, ?)`
         )
-        .run(sig, fecha, cab.tipo, cab.mesa_id, mozoId, cab.cliente, cab.nota, ahora(), ahora()).lastInsertRowid;
+        .run(sig, fecha, cab.tipo, cab.mesa_id, cab.mesa_etiqueta, mozoId, cab.cliente, cab.nota, ahora(), ahora()).lastInsertRowid;
       db.prepare('INSERT INTO comanda_historial (comanda_id, estado, usuario_id, fecha) VALUES (?,?,?,?)').run(nuevoId, 'generado', req.user.id, ahora());
       guardarItems(nuevoId, items);
       if (req.body.enviar) registrarEstado(nuevoId, 'enviado_cocina', req.user.id);
@@ -826,7 +926,9 @@ app.put(
     const cab = validarCabecera(req.body);
     const items = prepararItems(req.body.items, cab.tipo);
     tx(() => {
-      db.prepare('UPDATE comandas SET tipo=?, mesa_id=?, cliente=?, nota=?, actualizado_en=? WHERE id=?').run(cab.tipo, cab.mesa_id, cab.cliente, cab.nota, ahora(), c.id);
+      db.prepare('UPDATE comandas SET tipo=?, mesa_id=?, mesa_etiqueta=?, cliente=?, nota=?, actualizado_en=? WHERE id=?').run(
+        cab.tipo, cab.mesa_id, cab.mesa_etiqueta, cab.cliente, cab.nota, ahora(), c.id
+      );
       guardarItems(c.id, items);
       // si ya estaba en cocina, el ticket se vuelve a imprimir marcado como modificado
       if (EN_COCINA.includes(c.estado)) db.prepare('UPDATE comandas SET ticket_impreso = 0, ticket_modificado = 1 WHERE id = ?').run(c.id);
@@ -922,8 +1024,16 @@ app.post(
         .run(hoy(), total, metodo, recibido, req.user.id, ahora()).lastInsertRowid;
       const upd = db.prepare('UPDATE comandas SET pagada = 1, cobro_id = ?, actualizado_en = ? WHERE id = ?');
       ids.forEach((cid) => upd.run(id, ahora(), cid));
+      // mesa unida sin nada pendiente: se separa sola
+      for (const mesaId of new Set(comandas.map((c) => c.mesa_id).filter(Boolean))) {
+        const pendiente = db
+          .prepare("SELECT 1 FROM comandas WHERE mesa_id = ? AND pagada = 0 AND estado <> 'cancelado' LIMIT 1")
+          .get(mesaId);
+        if (!pendiente) separarGrupo(mesaId);
+      }
       return id;
     });
+    emitir('mesas');
     ids.forEach((cid) => notificarComanda(cid, 'pago'));
     return db.prepare('SELECT * FROM cobros WHERE id = ?').get(cobroId);
   })
