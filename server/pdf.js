@@ -1,11 +1,19 @@
 // Generación de tickets en PDF de 80 mm (ticket de cocina y comprobante de pago).
 // Cada documento se arma como una lista de bloques; primero se mide su alto
 // para que la página tenga exactamente el largo del ticket.
+const fs = require('node:fs');
+const path = require('node:path');
 const PDFDocument = require('pdfkit');
 
 const ANCHO = 226.77; // 80 mm en puntos
 const MARGEN = 12;
 const UTIL = ANCHO - MARGEN * 2;
+
+// Logo del comprobante, en negro para impresora térmica (sin el archivo se imprime el nombre).
+// Se regenera desde public/logo.svg si cambia el logo.
+const ARCHIVO_LOGO = path.join(__dirname, 'logo-comprobante.png');
+const LOGO = fs.existsSync(ARCHIVO_LOGO) ? fs.readFileSync(ARCHIVO_LOGO) : null;
+const ANCHO_LOGO = 150; // puntos (~53 mm)
 
 function fuente(doc, b) {
   doc.font(b.negrita ? 'Helvetica-Bold' : 'Helvetica').fontSize(b.tam || 10);
@@ -14,6 +22,7 @@ function fuente(doc, b) {
 function alto(doc, b) {
   if (b.t === 'espacio') return b.alto;
   if (b.t === 'linea') return 10;
+  if (b.t === 'imagen') return b.alto + 6;
   fuente(doc, b);
   if (b.t === 'fila') {
     const anchoDer = doc.widthOfString(b.der);
@@ -26,7 +35,9 @@ function dibujar(doc, bloques, medidor) {
   let y = MARGEN;
   for (const b of bloques) {
     const h = alto(medidor, b);
-    if (b.t === 'linea') {
+    if (b.t === 'imagen') {
+      doc.image(b.src, (ANCHO - b.ancho) / 2, y, { width: b.ancho });
+    } else if (b.t === 'linea') {
       doc.save().moveTo(MARGEN, y + 5).lineTo(ANCHO - MARGEN, y + 5).lineWidth(0.8).dash(2, { space: 2 }).stroke().restore();
     } else if (b.t === 'fila') {
       fuente(doc, b);
@@ -65,6 +76,8 @@ const centro = (t, tam = 10, negrita = false) => texto(t, tam, { alinear: 'cente
 const linea = () => ({ t: 'linea' });
 const espacio = (a = 4) => ({ t: 'espacio', alto: a });
 const fila = (izq, der, tam = 10, negrita = false) => ({ t: 'fila', izq: String(izq), der: String(der), tam, negrita });
+// Alto según las proporciones del PNG (ancho y alto están en los bytes 16-23 de la cabecera)
+const imagen = (src, ancho) => ({ t: 'imagen', src, ancho, alto: (ancho * src.readUInt32BE(20)) / src.readUInt32BE(16) });
 
 function lineasGuarnicion(it) {
   const r = [];
@@ -100,7 +113,7 @@ function ticketCocina(c, momento) {
 /** Comprobante de pago (interno) para el cliente. */
 function comprobante({ cobro, comandas, config, cajero }) {
   const dinero = (n) => `${config.moneda} ${Number(n || 0).toFixed(2)}`;
-  const b = [centro(config.nombreRestaurante, 14, true)];
+  const b = [LOGO ? imagen(LOGO, ANCHO_LOGO) : centro(config.nombreRestaurante, 14, true)];
   if (config.ruc) b.push(centro(`RUC ${config.ruc}`, 9));
   if (config.direccion) b.push(centro(config.direccion, 9));
   if (config.telefono) b.push(centro(`Tel. ${config.telefono}`, 9));

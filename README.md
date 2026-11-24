@@ -65,7 +65,7 @@ hasta que se entreguen; su ticket vuelve a quedar pendiente de impresión).
 
 - **Ticket de cocina:** sin precios y con letra grande; muestra mesa, mozo, platos, cambios de
   guarnición resaltados ("CAMBIO: Yuca frita (en vez de Arroz)", "SIN ARROZ") y notas.
-- **Comprobante:** datos del local (de `config.json`), detalle, total, forma de pago, recibido y vuelto.
+- **Comprobante:** logo del local (`server/logo-comprobante.png`, en negro para impresora térmica), datos del local (de `config.json`), detalle, total, forma de pago, recibido y vuelto.
   Es un **comprobante interno**: no reemplaza a la boleta o factura electrónica.
 - Ambos son PDF de 80 mm de ancho: sirven en una impresora térmica de tickets o en una impresora común.
 - Con **Chrome o Edge** en la computadora de la impresora, se abre directamente el diálogo de
