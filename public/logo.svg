@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 272" role="img" aria-label="Picantería Julieta - Cocina tradicional">
+  <!-- Redibujo del logo bordado. Los textos usan fuentes del sistema; textLength fija el ancho en cualquier equipo. -->
+  <g fill="#2d2f36" stroke="#2d2f36" stroke-linecap="round">
+    <!-- tenedor -->
+    <path d="M18 40H150" stroke-width="6"/>
+    <path d="M154 31V49" stroke-width="6"/>
+    <path d="M156 31H200M156 40H200M156 49H200" stroke-width="3.5"/>
+    <!-- cuchillo -->
+    <path d="M440 44C462 32 530 32 566 34V46H440Z" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M574 40H622" stroke-width="10"/>
+    <text x="320" y="54" text-anchor="middle" stroke="none" font-family="Georgia, 'Liberation Serif', 'Times New Roman', serif"
+      font-style="italic" font-size="46" textLength="214" lengthAdjust="spacingAndGlyphs">Picantería</text>
+  </g>
+  <g stroke="#e8762c" stroke-width="5" stroke-linecap="round"><path d="M12 80H628M12 214H628"/></g>
+  <text x="320" y="192" text-anchor="middle" font-family="'Segoe UI', Arial, 'Liberation Sans', Helvetica, sans-serif"
+    font-weight="700" font-size="122" textLength="560" lengthAdjust="spacingAndGlyphs" fill="#2d2f36"
+    >J<tspan fill="#e8762c">U</tspan>L<tspan fill="#e8762c">I</tspan>E<tspan fill="#e8762c">T</tspan>A</text>
+  <text x="320" y="258" text-anchor="middle" font-family="Georgia, 'Liberation Serif', 'Times New Roman', serif"
+    font-weight="700" font-size="30" textLength="420" lengthAdjust="spacingAndGlyphs" fill="#2d2f36">COCINA TRADICIONAL</text>
+</svg>

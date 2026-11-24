@@ -83,7 +83,7 @@ hasta que se entreguen; su ticket vuelve a quedar pendiente de impresión).
    ```json
    {
      "puerto": 3000,
-     "nombreRestaurante": "Mi Restaurante",
+     "nombreRestaurante": "Picantería Julieta",
      "moneda": "S/",
      "diasRespaldo": 30,
      "ruc": "",

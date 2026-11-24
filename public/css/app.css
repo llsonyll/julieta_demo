@@ -52,10 +52,7 @@ h3 { font-size: 1.05rem; }
   padding-top: env(safe-area-inset-top);
 }
 .lateral .marca { display: flex; align-items: center; gap: 10px; padding: 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
-.lateral .logo {
-  width: 34px; height: 34px; flex: none; border-radius: 8px; display: grid; place-items: center;
-  background: #f59e0b; color: #134e4a; font-weight: 800; font-size: .9rem;
-}
+.lateral .logo { width: 34px; height: 34px; flex: none; border-radius: 8px; }
 .lateral .marca .txt { min-width: 0; }
 .lateral .marca b { display: block; font-size: .95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lateral .marca small { display: block; color: #5eead4; font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -281,12 +278,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
   min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px;
   padding: 24px 16px; background: linear-gradient(150deg, #0f766e, #075e5a 45%, #13223a);
 }
-.login-marca { text-align: center; color: #5eead4; }
-.login-marca h1 { color: #fff; font-size: 1.5rem; margin: 12px 0 4px; }
-.login-marca .logo {
-  width: 64px; height: 64px; margin: 0 auto; border-radius: 16px; display: grid; place-items: center;
-  background: #f59e0b; color: #134e4a; font-weight: 800; font-size: 1.5rem;
+.login-marca { width: 100%; text-align: center; color: #5eead4; }
+.login-marca .logo-placa {
+  margin: 0 auto 10px; width: min(340px, 100%); padding: 16px 22px; border-radius: 16px;
+  background: #fbf6ea; box-shadow: 0 10px 30px rgba(0, 0, 0, .25);
 }
+.login-marca .logo-placa img { display: block; width: 100%; height: auto; }
 .login-caja {
   width: 100%; max-width: 680px; background: #fff; border-radius: 16px; padding: 24px;
   display: grid; grid-template-columns: 1fr 220px; gap: 28px; box-shadow: 0 10px 40px rgba(0, 0, 0, .25);

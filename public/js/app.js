@@ -361,8 +361,7 @@ async function renderLogin(mensaje = '') {
   $('#app').innerHTML = `
     <div class="login">
       <div class="login-marca">
-        <div class="logo">${esc(iniciales(S.config.nombreRestaurante))}</div>
-        <h1>${esc(S.config.nombreRestaurante)}</h1>
+        <h1 class="logo-placa"><img src="/logo.svg" alt="${esc(S.config.nombreRestaurante)}"></h1>
         <div>Sistema de comandas</div>
       </div>
       <div class="login-caja">
@@ -445,7 +444,7 @@ function renderShell() {
     <div class="app${colapsado ? ' colapsado' : ''}">
       <aside class="lateral">
         <div class="marca">
-          <div class="logo">${esc(iniciales(S.config.nombreRestaurante))}</div>
+          <img class="logo" src="/icono.svg" alt="">
           <div class="txt"><b>${esc(S.config.nombreRestaurante)}</b><small>${esc(S.config.direccion || 'Sistema de comandas')}</small></div>
         </div>
         <div class="rol-pill"><span class="txt">${ROL_TXT[rol]}</span><span class="punto" id="punto"></span></div>
