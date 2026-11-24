@@ -122,8 +122,6 @@ function comprobante({ cobro, comandas, config, cajero }) {
 
   const primera = comandas[0];
   b.push(texto(primera.tipo === 'local' ? `Mesa: ${primera.mesa_numero}` : `Para llevar${primera.cliente ? `: ${primera.cliente}` : ''}`, 10, { negrita: true }));
-  const mozos = [...new Set(comandas.map((c) => c.mozo_nombre).filter(Boolean))];
-  if (mozos.length) b.push(texto(`Atendió: ${mozos.join(', ')}`, 9));
   b.push(texto(`Comanda${comandas.length > 1 ? 's' : ''}: ${comandas.map((c) => `#${c.numero_dia}`).join(', ')}`, 9));
   b.push(linea(), fila('Cant. Descripción', 'Importe', 9, true), espacio(2));
 
