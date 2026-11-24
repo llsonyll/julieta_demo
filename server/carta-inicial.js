@@ -46,19 +46,21 @@ function cargarCarta(datos, { desactivarOtros = false } = {}) {
         p.con_eleccion ? 1 : 0,
         p.para_local === false ? 0 : 1,
         p.para_llevar === false ? 0 : 1,
+        // ponytail: sin precio (null) = se guarda inactivo para que no se venda a S/ 0
+        p.precio === null ? 0 : 1,
       ];
       if (!Number.isFinite(valores[3]) || valores[3] < 0) throw new Error(`Precio inválido en "${nombre}"`);
       const existe = buscarP.get(nombre);
       if (existe) {
         db.prepare(
           `UPDATE productos SET nombre=?, descripcion=?, categoria=?, precio=?, tipo=?, guarnicion_base_id=?, con_eleccion=?,
-             para_local=?, para_llevar=?, activo=1 WHERE id=?`
+             para_local=?, para_llevar=?, activo=? WHERE id=?`
         ).run(...valores, existe.id);
         r.platosActualizados++;
       } else {
         db.prepare(
-          `INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, guarnicion_base_id, con_eleccion, para_local, para_llevar)
-           VALUES (?,?,?,?,?,?,?,?,?)`
+          `INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, guarnicion_base_id, con_eleccion, para_local, para_llevar, activo)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`
         ).run(...valores);
         r.platosCreados++;
       }

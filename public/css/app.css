@@ -445,3 +445,20 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .leyenda-salon i.ocupada { background: #ef4444; }
 .leyenda-salon i.cobrar { background: #f59e0b; }
 .leyenda-salon i.excedida { border: 2px solid #f59e0b; }
+
+/* ---------- cartas ---------- */
+.carta-resumen { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 190px; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.carta-resumen.activo { border-color: var(--primario); box-shadow: 0 0 0 2px var(--primario); }
+div.carta-resumen { cursor: default; max-width: 320px; }
+.tabla-carta th, .tabla-carta td { padding: 12px 14px; vertical-align: middle; }
+.tabla-carta tr.apagado td { opacity: .5; }
+.tabla-carta .precio { color: var(--primario); font-weight: 700; }
+.recorte { max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.interruptor { width: 40px; height: 24px; border-radius: 12px; border: 0; background: #cbd2dc; position: relative; cursor: pointer; transition: background .15s; }
+.interruptor::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .15s; }
+.interruptor.on { background: var(--ok); }
+.interruptor.on::after { left: 19px; }
+.insignia { display: inline-block; border: 0; border-radius: 20px; padding: 4px 10px; font: inherit; font-size: .78rem; font-weight: 700; white-space: nowrap; }
+button.insignia { cursor: pointer; }
+.insignia.si { background: #dcfce7; color: #166534; }
+.insignia.no { background: #fde8e8; color: var(--peligro); }

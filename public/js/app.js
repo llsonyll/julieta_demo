@@ -19,6 +19,7 @@ const S = {
   filtroMesas: 'todas',
   adminTab: 'carta',
   filtroPlatos: 'todos',
+  filtroCarta: 'todas',
   fechaCarta: null,
   fechaReporte: null,
   audio: null,
@@ -36,7 +37,7 @@ const ESTADO_TXT = {
 const claseEstado = (e) => (EN_COCINA.includes(e) ? 'enviado_cocina' : e);
 const ROL_TXT = { admin: 'Administrador', mozo: 'Mozo', caja: 'Caja', cocina: 'Cocina' };
 const TABS = {
-  admin: ['mesas', 'comandas', 'tickets', 'reporte', 'admin'],
+  admin: ['mesas', 'comandas', 'tickets', 'carta', 'reporte', 'admin'],
   mozo: ['mesas', 'comandas', 'carta'],
   caja: ['mesas', 'comandas', 'tickets', 'reporte'],
   cocina: ['tickets', 'carta'],
@@ -46,7 +47,7 @@ const TAB_INFO = {
   mesas: ['Salón', 'Operaciones', '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>'],
   comandas: ['Pedidos / Comandas', 'Operaciones', '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M12 11h4M12 16h4M8 11h.01M8 16h.01"/>'],
   tickets: ['Cocina', 'Operaciones', '<path d="M17 21a1 1 0 0 0 1-1v-5.35c0-.46.32-.84.73-1.04a4 4 0 0 0-2.14-7.59 5 5 0 0 0-9.18 0 4 4 0 0 0-2.14 7.59c.41.2.73.58.73 1.04V20a1 1 0 0 0 1 1ZM6 17h12"/>'],
-  carta: ['Carta del día', 'Catálogos', '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>'],
+  carta: ['Cartas', 'Catálogos', '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>'],
   reporte: ['Reportes', 'Análisis', '<path d="M3 3v18h18M8 17V9M13 17V5M18 17v-3"/>'],
   admin: ['Configuración', 'Sistema', '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'],
 };
@@ -1404,32 +1405,107 @@ async function vMesas(main) {
   );
 }
 
-// ---------- Carta de hoy (consulta) ----------
+// ---------- Cartas: menú del día (cambia a diario) + extras (carta fija) ----------
 async function vCarta(main) {
-  const carta = await api('GET', '/api/carta');
+  const admin = puede('admin');
   const puedeAgotar = puede('admin', 'cocina', 'caja');
+  const carta = await api('GET', `/api/carta${admin ? '?completo=1' : ''}`);
+  const f = S.filtroCarta || 'todas';
+  const todos = [...carta.menu, ...carta.extras];
+  const lista = todos.filter((p) => f === 'todas' || p.tipo === f);
+  const delDia = carta.guarniciones.filter((g) => g.activo && g.del_dia);
+  const aEleccion = (delDia.length ? delDia : carta.guarniciones.filter((g) => g.activo && g.eleccion_habitual)).map((g) => g.nombre);
+  const menuHoy = carta.menu.filter((p) => p.activo && p.en_carta).length;
+  const extrasActivos = carta.extras.filter((p) => p.activo).length;
+  // Estado: en el menú = "sale hoy"; en extras = activo en la carta fija
+  const encendido = (p) => (p.tipo === 'menu' ? p.en_carta && p.activo : p.activo);
+  const interruptor = (p) =>
+    admin
+      ? `<button class="interruptor ${encendido(p) ? 'on' : ''}" data-estado-plato="${p.id}" role="switch" aria-checked="${encendido(p) ? 'true' : 'false'}"
+           aria-label="${p.tipo === 'menu' ? 'Sale hoy' : 'Activo'}: ${esc(p.nombre)}"></button>`
+      : '';
+  const guarnicion = (p) =>
+    p.guarnicion_base || p.con_eleccion
+      ? `${p.guarnicion_base ? esc(p.guarnicion_base) : '—'}<div class="suave peq">${p.con_eleccion ? '+ 1 a elección (sin costo)' : 'cambiable'}</div>`
+      : '<span class="suave">Sin guarnición</span>';
   const fila = (p) => `
-    <div class="producto">
-      <div class="info">
-        <div class="nombre">${esc(p.nombre)} ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''}</div>
-        <div class="suave peq">${p.guarnicion_base ? `con ${esc(p.guarnicion_base.toLowerCase())}` : ''}${p.con_eleccion ? ' + guarnición a elección' : ''}
-          ${p.guarnicion_base || p.con_eleccion ? ' · ' : ''}${p.para_local ? '🍽️ Mesa ' : ''}${p.para_llevar ? '🥡 Llevar' : ''}</div>
-      </div>
-      <div class="der"><b>${dinero(p.precio)}</b>
-        ${puedeAgotar ? `<div><button class="btn chico ${p.disponible ? 'peligro' : 'ok'}" data-accion="disponible" data-id="${p.id}" data-v="${p.disponible ? 0 : 1}">${p.disponible ? 'Agotado' : 'Hay'}</button></div>` : ''}
-      </div>
-    </div>`;
-  const cats = [...new Set(carta.extras.map((p) => p.categoria || 'Otros'))];
-  const delDia = carta.guarniciones.filter((g) => g.del_dia);
-  const opciones = delDia.length ? delDia : carta.guarniciones.filter((g) => g.eleccion_habitual);
+    <tr data-buscar="${esc((p.nombre + ' ' + p.categoria + ' ' + p.descripcion).toLowerCase())}" class="${encendido(p) ? '' : 'apagado'}">
+      <td><b>${esc(p.nombre)}</b>${p.descripcion ? `<div class="suave peq recorte">${esc(p.descripcion)}</div>` : ''}</td>
+      <td>${p.tipo === 'menu' ? 'Menú del día' : 'Extras'}<div class="suave peq">${esc(p.categoria)}</div></td>
+      <td>${guarnicion(p)}</td>
+      <td class="num precio">${p.precio > 0 ? dinero(p.precio) : '<span class="suave">Sin precio</span>'}</td>
+      ${admin ? `<td>${interruptor(p)}</td>` : ''}
+      <td>${
+        puedeAgotar
+          ? `<button class="insignia ${p.disponible ? 'si' : 'no'}" data-accion="disponible" data-id="${p.id}" data-v="${p.disponible ? 0 : 1}" title="Tocar para cambiar">${p.disponible ? 'Disponible' : 'Agotado'}</button>`
+          : `<span class="insignia ${p.disponible ? 'si' : 'no'}">${p.disponible ? 'Disponible' : 'Agotado'}</span>`
+      }</td>
+      ${admin ? `<td><button class="btn chico" data-editar-plato="${p.id}" aria-label="Editar ${esc(p.nombre)}">${svg('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', 16)}</button></td>` : ''}
+    </tr>`;
+  const tarjetaCarta = (v, titulo, sub) =>
+    `<button class="tarjeta carta-resumen ${f === v ? 'activo' : ''}" data-chip="fc" data-v="${v}"><b>${titulo}</b><small class="suave">${sub}</small></button>`;
   main.innerHTML = `
     <div class="pila">
-      <h2>Menú de hoy</h2>
-      <div class="tarjeta"><h3>🥗 Guarniciones a elección de hoy</h3>
-        <div class="opciones" style="margin-top:8px">${opciones.map((g) => `<span class="chip">${esc(g.nombre)}</span>`).join('') || '<span class="suave">No se definieron: se puede elegir cualquiera.</span>'}</div></div>
-      <div class="tarjeta"><h3>📅 Menú del día</h3>${carta.menu.map(fila).join('') || '<div class="suave">Sin menú cargado hoy.</div>'}</div>
-      ${cats.map((c) => `<div class="tarjeta"><h3>⭐ Extras · ${esc(c)}</h3>${carta.extras.filter((p) => (p.categoria || 'Otros') === c).map(fila).join('')}</div>`).join('')}
+      <div class="fila entre envolver">
+        <div><h2 style="margin:0">Gestión de Cartas</h2><div class="suave">${todos.length} platos configurados</div></div>
+        ${
+          admin
+            ? `<div class="fila envolver"><button class="btn chico" id="planificar">📅 Planificar otro día</button>
+               <button class="btn chico" id="guarniciones">🥗 Guarniciones</button>
+               <button class="btn chico primario" id="nuevo">＋ Nuevo plato</button></div>`
+            : ''
+        }
+      </div>
+      <div class="fila envolver">
+        ${tarjetaCarta('menu', 'Menú del día', `${menuHoy} platos hoy · cambia a diario`)}
+        ${tarjetaCarta('extra', 'Extras', `${extrasActivos} platos activos · carta fija`)}
+        <div class="tarjeta carta-resumen"><b>A elección hoy</b><small class="suave">${esc(aEleccion.join(', ') || 'cualquier guarnición')}</small></div>
+      </div>
+      <div class="fila entre envolver">
+        <div class="segmento compacto">${[['todas', 'Todas'], ['menu', 'Menú del día'], ['extra', 'Extras']]
+          .map(([v, t]) => `<button class="${f === v ? 'activo' : ''}" data-chip="fc" data-v="${v}">${t}</button>`)
+          .join('')}</div>
+        <input class="entrada" id="buscar" type="search" placeholder="🔎 Buscar plato…" autocomplete="off" style="max-width:280px">
+      </div>
+      <div class="tarjeta tabla-wrap" style="padding:0">
+        <table class="tabla-carta">
+          <thead><tr><th>Plato</th><th>Carta / Categoría</th><th>Guarnición</th><th class="num">Precio</th>
+            ${admin ? '<th>Estado</th>' : ''}<th>Agotado</th>${admin ? '<th>Acciones</th>' : ''}</tr></thead>
+          <tbody>${lista.map(fila).join('') || `<tr><td colspan="7" class="vacio">Sin platos.</td></tr>`}</tbody>
+        </table>
+      </div>
+      <p class="suave peq">Los extras llevan su guarnición por defecto; el cliente puede cambiarla y/o agregar una a elección sin costo adicional.</p>
     </div>`;
+  enlazarChips(main, 'fc', (v) => {
+    S.filtroCarta = S.filtroCarta === v ? 'todas' : v;
+    vCarta(main);
+  });
+  $('#buscar', main).oninput = (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    $$('tbody tr[data-buscar]', main).forEach((x) => x.classList.toggle('oculto', q && !x.dataset.buscar.includes(q)));
+  };
+  if (!admin) return;
+  const buscar = (id) => todos.find((p) => p.id === Number(id));
+  $('#nuevo', main).onclick = () => formularioPlato(null, { tipo: f === 'extra' ? 'extra' : 'menu' });
+  $('#planificar', main).onclick = () => ((S.adminTab = 'carta'), ir('#/admin'));
+  $('#guarniciones', main).onclick = () => ((S.adminTab = 'guarniciones'), ir('#/admin'));
+  $$('[data-editar-plato]', main).forEach((x) => (x.onclick = () => formularioPlato(buscar(x.dataset.editarPlato))));
+  $$('[data-estado-plato]', main).forEach(
+    (x) =>
+      (x.onclick = async () => {
+        const p = buscar(x.dataset.estadoPlato);
+        try {
+          if (p.tipo === 'menu') {
+            // un plato de menú inactivo se reactiva al sacarlo hoy
+            if (!p.activo) await api('PUT', `/api/productos/${p.id}`, { ...p, activo: true });
+            await api('POST', '/api/carta/menu', { producto_id: p.id, incluir: !encendido(p) });
+          } else await api('PUT', `/api/productos/${p.id}`, { ...p, activo: !p.activo });
+          recargarVista();
+        } catch (e) {
+          toast(e.message, 'error');
+        }
+      })
+  );
 }
 
 // ---------- Reporte del día ----------
