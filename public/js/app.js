@@ -906,6 +906,7 @@ async function vEditorComanda(main, r, esRecarga) {
           base: i.guarnicion_base_id || null,
           eleccion: i.guarnicion_eleccion_id || null,
         });
+  const lineasGuardadas = JSON.stringify(b.lineas);
   if (r.query.get('mesa')) b.tipo = 'local';
   if (existente?.mesa_id && !mesas.find((m) => m.id === existente.mesa_id))
     mesas.push({ id: existente.mesa_id, numero: existente.mesa_numero, ocupada: true });
@@ -1010,32 +1011,49 @@ async function vEditorComanda(main, r, esRecarga) {
     };
   }
 
-  function filaProducto(p) {
-    const ok = b.tipo === 'local' ? p.para_local : p.para_llevar;
-    if (!ok) return '';
+  // Carta (pestaña) y categoría elegidas en el panel izquierdo
+  let pestana = carta.menu.length ? 'menu' : 'extra';
+  let categoria = 'todos';
+  let busqueda = '';
+  const mesaSel = () => mesas.find((m) => m.id === b.mesa_id);
+  const vendible = (p) => (b.tipo === 'local' ? p.para_local : p.para_llevar);
+
+  function tarjetaPlato(p) {
     const n = cantidadDe(p.id);
-    const sub =
-      [p.guarnicion_base ? `con ${esc(p.guarnicion_base.toLowerCase())}` : '', p.con_eleccion ? '+ guarnición a elección' : '']
-        .filter(Boolean)
-        .join(' ') || esc(p.descripcion.toLowerCase());
+    const guar = [p.guarnicion_base ? `con ${p.guarnicion_base.toLowerCase()}` : '', p.con_eleccion ? '+ a elección' : ''].filter(Boolean).join(' ');
     return `
-      <div class="producto ${!p.disponible ? 'sin-stock' : ''}" data-pid="${p.id}" data-buscar="${esc((p.nombre + ' ' + p.categoria).toLowerCase())}">
-        <div class="info">
-          <div class="nombre">${esc(p.nombre)} ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''}</div>
-          <div class="suave peq">${dinero(p.precio)}${sub ? ` · ${sub}` : ''}</div>
-        </div>
+      <button type="button" class="plato ${!p.disponible ? 'sin-stock' : ''}" data-mas="${p.id}" data-pid="${p.id}" ${!p.disponible ? 'disabled' : ''}>
         <span class="cuenta ${n ? '' : 'oculto'}">${n}</span>
-        <button type="button" class="btn-mas" data-mas="${p.id}" ${!p.disponible ? 'disabled' : ''} aria-label="Agregar ${esc(p.nombre)}">＋</button>
-      </div>`;
+        <span class="fila entre"><b>${esc(p.nombre)}</b>${!p.disponible ? '<span class="insignia no">Agotado</span>' : ''}</span>
+        <small class="suave desc">${esc(p.descripcion)}</small>
+        <span class="pie"><b class="precio">${dinero(p.precio)}</b><small class="suave">${esc(guar)}</small></span>
+      </button>`;
   }
 
-  function seccion(titulo, lista) {
-    const filas = lista.map(filaProducto).join('');
-    return filas ? `<div class="tarjeta"><h3>${titulo}</h3>${filas}</div>` : '';
+  function pintarCarta() {
+    const deCarta = (pestana === 'menu' ? carta.menu : carta.extras).filter(vendible);
+    const cats = [...new Set(deCarta.map((p) => p.categoria || 'Otros'))];
+    if (!cats.includes(categoria)) categoria = 'todos';
+    const q = busqueda.toLowerCase();
+    const lista = deCarta.filter(
+      (p) => (categoria === 'todos' || (p.categoria || 'Otros') === categoria) && (!q || (p.nombre + ' ' + p.descripcion).toLowerCase().includes(q))
+    );
+    $$('[data-pestana]', main).forEach((x) => x.classList.toggle('activo', x.dataset.pestana === pestana));
+    $('#cats', main).innerHTML =
+      cats.length > 1
+        ? [['todos', 'Todos'], ...cats.map((c) => [c, c])]
+            .map(([v, t]) => `<button type="button" class="chip chico ${v === categoria ? 'activo' : ''}" data-cat="${esc(v)}">${esc(t)}</button>`)
+            .join('')
+        : '';
+    $('#grid', main).innerHTML =
+      lista.map(tarjetaPlato).join('') ||
+      `<div class="vacio">${pestana === 'menu' && !carta.menu.length ? 'No hay menú del día cargado para hoy.' : 'Sin platos.'}</div>`;
+    $$('[data-cat]', main).forEach((x) => (x.onclick = () => ((categoria = x.dataset.cat), pintarCarta())));
+    $$('[data-mas]', main).forEach((x) => (x.onclick = () => configurarPlato(porId.get(Number(x.dataset.mas)))));
   }
 
   function htmlPedido() {
-    if (!b.lineas.length) return '<div class="suave">Todavía no hay platos. Tóquelos abajo para agregarlos.</div>';
+    if (!b.lineas.length) return '<div class="vacio">🍽️<br>Sin platos aún<br><small>Toque los platos de la carta</small></div>';
     return b.lineas
       .map((l, i) => {
         const p = porId.get(l.producto_id);
@@ -1055,10 +1073,9 @@ async function vEditorComanda(main, r, esRecarga) {
 
   function refrescar() {
     $('#pedido', main).innerHTML = htmlPedido();
-    $('#cant-pedido', main).textContent = cantidadTotal();
-    $('#total', main).textContent = dinero(total());
-    $('#cant', main).textContent = `${cantidadTotal()} plato(s)`;
-    $$('.producto', main).forEach((f) => {
+    $('#cant-pedido', main).textContent = `${cantidadTotal()} plato(s)`;
+    $$('[data-total]', main).forEach((x) => (x.textContent = dinero(total())));
+    $$('.plato', main).forEach((f) => {
       const n = cantidadDe(Number(f.dataset.pid));
       const c = $('.cuenta', f);
       c.textContent = n;
@@ -1095,45 +1112,60 @@ async function vEditorComanda(main, r, esRecarga) {
   }
 
   function render() {
-    const categorias = [...new Set(carta.extras.map((p) => p.categoria || 'Otros'))];
+    const m = mesaSel();
+    const titulo = b.tipo === 'llevar' ? 'Para llevar' : m ? `Mesa ${esc(m.etiqueta)}` : 'Elija una mesa';
+    const sub =
+      b.tipo === 'local' && m ? [m.piso, m.zona, m.mozo_nombre].filter(Boolean).map(esc).join(' · ') : editando ? `Comanda #${existente.numero_dia}` : 'Nueva comanda';
     const ordenMesas = [...mesas].sort((a, c) => (c.mozo_id === S.me.id) - (a.mozo_id === S.me.id));
     main.innerHTML = `
-      <div class="pila con-barra">
-        <div class="fila entre"><button class="btn chico" data-accion="volver">← Volver</button>
-          <h2>${editando ? `Editar comanda #${existente.numero_dia}` : 'Nueva comanda'}</h2></div>
-        <div class="segmento">
-          <button type="button" data-tipo="local" class="${b.tipo === 'local' ? 'activo' : ''}">🍽️ En mesa</button>
-          <button type="button" data-tipo="llevar" class="${b.tipo === 'llevar' ? 'activo' : ''}">🥡 Para llevar</button>
+      <div class="editor">
+        <div class="editor-cab">
+          <button class="btn chico" data-accion="volver">${svg('<path d="m15 18-6-6 6-6"/>', 16)} Volver</button>
+          <div class="editor-titulo"><b class="titulo">${titulo}</b> <span class="suave">· ${sub}</span></div>
+          <div class="segmento compacto">
+            <button type="button" data-tipo="local" class="${b.tipo === 'local' ? 'activo' : ''}">🍽️ En mesa</button>
+            <button type="button" data-tipo="llevar" class="${b.tipo === 'llevar' ? 'activo' : ''}">🥡 Para llevar</button>
+          </div>
+          <b class="total-cab">Total: <span data-total>${dinero(total())}</span></b>
         </div>
-        ${
-          b.tipo === 'local'
-            ? `<div class="tarjeta"><h3 style="margin-bottom:10px">Mesa</h3>
-                ${
-                  ordenMesas.length
-                    ? `<div class="mesas-grid">${ordenMesas
-                        .map(
-                          (m) => `<button type="button" class="mesa-btn ${m.ocupada ? 'ocupada' : ''} ${m.id === b.mesa_id ? 'sel' : ''}" data-mesa="${m.id}">
-                            <span class="n">${esc(m.etiqueta)}</span><span class="s">${esc(m.piso)} · ${m.ocupada ? 'ocupada' : 'libre'}</span>
-                            ${S.me.rol === 'mozo' && m.mozo_id === S.me.id ? '<span class="s">★ tuya</span>' : ''}</button>`
-                        )
-                        .join('')}</div>`
-                    : '<div class="suave">No hay mesas registradas.</div>'
-                }</div>`
-            : `<div class="tarjeta"><label class="campo"><span>Nombre del cliente / referencia</span>
-                <input id="cliente" value="${esc(b.cliente)}" placeholder="Ej: Juan, delivery 3…" autocomplete="off"></label></div>`
-        }
-        <div class="tarjeta pedido"><h3>🧾 Pedido (<span id="cant-pedido">${cantidadTotal()}</span>)</h3><div id="pedido">${htmlPedido()}</div></div>
-        <input class="entrada" id="buscar" placeholder="🔎 Buscar plato…" autocomplete="off">
-        ${seccion('📅 Menú del día', carta.menu) || '<div class="tarjeta suave">No hay menú del día cargado para hoy.</div>'}
-        ${categorias.map((cat) => seccion(`⭐ Extras · ${esc(cat)}`, carta.extras.filter((p) => (p.categoria || 'Otros') === cat))).join('')}
-        <div class="tarjeta"><label class="campo"><span>Nota general para cocina</span>
-          <textarea id="nota" placeholder="Ej: alérgico al maní, servir todo junto…">${esc(b.nota)}</textarea></label></div>
-      </div>
-      <div class="barra-total"><div class="contenido">
-        <div class="crecer"><div class="total" id="total">${dinero(total())}</div><div class="suave peq" id="cant">${cantidadTotal()} plato(s)</div></div>
-        <button class="btn" id="guardar">Guardar</button>
-        ${b.estadoOriginal === 'generado' ? '<button class="btn primario" id="enviar">Enviar a cocina</button>' : ''}
-      </div></div>`;
+        <div class="editor-cuerpo">
+          <section class="editor-carta">
+            <div class="pestanas">
+              <button type="button" data-pestana="menu">Menú del día</button>
+              <button type="button" data-pestana="extra">Extras</button>
+            </div>
+            <div class="fila envolver">
+              <input class="entrada" id="buscar" type="search" placeholder="🔎 Buscar plato…" autocomplete="off" value="${esc(busqueda)}" style="max-width:240px">
+              <div class="fila envolver" id="cats"></div>
+            </div>
+            <div class="grid-platos" id="grid"></div>
+          </section>
+          <aside class="editor-pedido tarjeta">
+            <div class="fila entre"><b>Comanda — ${titulo}</b><small class="suave" id="cant-pedido">${cantidadTotal()} plato(s)</small></div>
+            ${
+              b.tipo === 'local'
+                ? `<select class="entrada" id="mesa" aria-label="Mesa">
+                    <option value="">— Elegir mesa —</option>
+                    ${ordenMesas
+                      .map(
+                        (x) =>
+                          `<option value="${x.id}" ${x.id === b.mesa_id ? 'selected' : ''}>Mesa ${esc(x.etiqueta)} · ${esc(x.piso || '')} · ${x.ocupada ? 'ocupada' : 'libre'}${S.me.rol === 'mozo' && x.mozo_id === S.me.id ? ' ★' : ''}</option>`
+                      )
+                      .join('')}
+                  </select>`
+                : `<input class="entrada" id="cliente" value="${esc(b.cliente)}" placeholder="Nombre del cliente / referencia" autocomplete="off">`
+            }
+            <div id="pedido" class="lista-pedido">${htmlPedido()}</div>
+            <textarea class="entrada" id="nota" rows="2" placeholder="Nota general para cocina (ej: alérgico al maní)">${esc(b.nota)}</textarea>
+            <div class="fila entre total-pedido"><span>Total</span><b data-total>${dinero(total())}</b></div>
+            <div class="fila acciones-pedido">
+              <button class="btn" id="guardar">Guardar</button>
+              ${puede('admin', 'mozo', 'caja') ? '<button class="btn acento" id="precuenta" aria-label="Precuenta">🧾<span class="solo-ancho"> Precuenta</span></button>' : ''}
+              ${b.estadoOriginal === 'generado' ? `<button class="btn primario crecer" id="enviar">${svg('<path d="m22 2-7 20-4-9-9-4Z M22 2 11 13"/>', 18)} Enviar a cocina</button>` : ''}
+            </div>
+          </aside>
+        </div>
+      </div>`;
     enlazar();
   }
 
@@ -1142,38 +1174,48 @@ async function vEditorComanda(main, r, esRecarga) {
       (el) =>
         (el.onclick = () => {
           b.tipo = el.dataset.tipo;
-          b.lineas = b.lineas.filter((l) => {
-            const p = porId.get(l.producto_id);
-            return b.tipo === 'local' ? p.para_local : p.para_llevar;
-          });
+          b.lineas = b.lineas.filter((l) => vendible(porId.get(l.producto_id)));
           render();
         })
     );
-    $$('[data-mesa]', main).forEach(
-      (el) =>
-        (el.onclick = () => {
-          b.mesa_id = Number(el.dataset.mesa);
-          $$('[data-mesa]', main).forEach((x) => x.classList.toggle('sel', x === el));
-        })
-    );
-    $$('[data-mas]', main).forEach(
-      (el) =>
-        (el.onclick = () => {
-          const p = porId.get(Number(el.dataset.mas));
-          configurarPlato(p); // todos abren el modal: guarnición opcional + nota
-        })
-    );
-    enlazarPedido();
+    $$('[data-pestana]', main).forEach((x) => (x.onclick = () => ((pestana = x.dataset.pestana), (categoria = 'todos'), pintarCarta())));
+    const mesa = $('#mesa', main);
+    if (mesa)
+      mesa.onchange = () => {
+        b.mesa_id = Number(mesa.value) || null;
+        render();
+      };
     const cli = $('#cliente', main);
     if (cli) cli.oninput = () => (b.cliente = cli.value);
     $('#nota', main).oninput = (e) => (b.nota = e.target.value);
     $('#buscar', main).oninput = (e) => {
-      const q = e.target.value.trim().toLowerCase();
-      $$('.producto', main).forEach((f) => f.classList.toggle('oculto', q && !f.dataset.buscar.includes(q)));
+      busqueda = e.target.value.trim();
+      pintarCarta();
     };
     $('#guardar', main).onclick = () => guardar(false);
     const env = $('#enviar', main);
     if (env) env.onclick = () => guardar(true);
+    const pc = $('#precuenta', main);
+    if (pc) pc.onclick = precuenta;
+    pintarCarta();
+    enlazarPedido();
+  }
+
+  // La precuenta sale de lo guardado: de la mesa entera, o de esta comanda si es para llevar
+  async function precuenta() {
+    if (JSON.stringify(b.lineas) !== lineasGuardadas) return toast('Guarde los cambios antes de imprimir la precuenta', 'error');
+    const ventana = prepararVentana(); // antes del await, para que el celular no bloquee la ventana
+    try {
+      const ids =
+        b.tipo === 'local' && b.mesa_id
+          ? (await api('GET', '/api/comandas?vista=por_cobrar')).filter((c) => c.mesa_id === b.mesa_id).map((c) => c.id)
+          : b.id ? [b.id] : [];
+      if (!ids.length) throw new Error('Todavía no hay comandas guardadas para la precuenta');
+      imprimirPDF(`/api/precuenta.pdf?ids=${ids.join(',')}`, ventana);
+    } catch (e) {
+      ventana?.close();
+      toast(e.message, 'error');
+    }
   }
 
   async function guardar(enviar) {
@@ -1193,7 +1235,7 @@ async function vEditorComanda(main, r, esRecarga) {
         guarnicion_eleccion_id: l.eleccion,
       })),
     };
-    $$('.barra-total button', main).forEach((x) => (x.disabled = true));
+    $$('.acciones-pedido button', main).forEach((x) => (x.disabled = true));
     try {
       const c = b.id ? await api('PUT', `/api/comandas/${b.id}`, cuerpo) : await api('POST', '/api/comandas', cuerpo);
       toast(enviar ? `Comanda #${c.numero_dia} enviada a cocina` : `Comanda #${c.numero_dia} guardada`, 'ok');
@@ -1201,7 +1243,7 @@ async function vEditorComanda(main, r, esRecarga) {
       navegar();
     } catch (e) {
       toast(e.message, 'error', 4000);
-      $$('.barra-total button', main).forEach((x) => (x.disabled = false));
+      $$('.acciones-pedido button', main).forEach((x) => (x.disabled = false));
     }
   }
 
@@ -1437,6 +1479,7 @@ async function vMesas(main) {
             <div class="fila entre"><h3>Mesa ${esc(p.etiqueta)} <span class="suave peq">· ${esc(p.piso)}</span></h3><button class="btn chico" data-x>✕</button></div>
             <div class="suave">Mozo: ${esc(p.mozo_nombre || '-')}${cs.length ? ` · Consumo: <b>${dinero(total)}</b>` : ' · Libre'}</div>
             ${cs.length && puede('admin', 'caja') ? `<button class="btn acento bloque" id="cobrar-mesa">💵 Cobrar mesa completa (${dinero(total)})</button>` : ''}
+            ${cs.length ? `<button class="btn bloque" id="precuenta-mesa">🧾 Precuenta (${dinero(total)})</button>` : ''}
             ${cs.map(tarjetaComanda).join('')}
             <button class="btn primario bloque" data-accion="nueva-comanda" data-mesa="${p.id}">＋ ${cs.length ? 'Agregar otra comanda' : 'Nueva comanda'}</button>
             ${separar}
@@ -1444,6 +1487,8 @@ async function vMesas(main) {
         $('[data-x]', modal).onclick = cerrarModal;
         const cm = $('#cobrar-mesa', modal);
         if (cm) cm.onclick = () => abrirCobro(cs, `Cobrar mesa ${p.etiqueta}`);
+        const pc = $('#precuenta-mesa', modal);
+        if (pc) pc.onclick = () => imprimirPDF(`/api/precuenta.pdf?ids=${cs.map((c) => c.id).join(',')}`);
         const sp = $('#separar', modal);
         if (sp)
           sp.onclick = async () => {

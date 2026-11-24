@@ -231,11 +231,6 @@ main {
 .mesa-btn.sel { border-color: var(--primario); background: var(--primario); color: #fff; }
 .mesa-btn.sel .s { color: #dbe6f5; }
 
-.producto { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--borde); }
-.producto:last-child { border-bottom: 0; }
-.producto .info { flex: 1; min-width: 0; }
-.producto .nombre { font-weight: 600; }
-.producto.sin-stock { opacity: .5; }
 .contador-cant { display: flex; align-items: center; gap: 4px; }
 .contador-cant button {
   width: 40px; height: 40px; border-radius: 50%; border: 0; background: #e9edf3; font-size: 1.3rem;
@@ -245,14 +240,6 @@ main {
 .contador-cant .v { min-width: 26px; text-align: center; font-weight: 800; font-size: 1.05rem; }
 .btn-nota { border: 0; background: none; color: var(--primario-2); font-size: .8rem; padding: 2px 0; cursor: pointer; font-weight: 600; }
 
-.barra-total {
-  position: fixed; left: var(--lat, 0); right: 0; bottom: 0; z-index: 16; padding-bottom: calc(10px + env(safe-area-inset-bottom)) !important;
-  background: #fff; border-top: 1px solid var(--borde); padding: 10px 16px;
-  box-shadow: 0 -4px 14px rgba(16,24,40,.08);
-}
-.barra-total .contenido { max-width: 1100px; margin: 0 auto; display: flex; gap: 8px; align-items: center; }
-.barra-total .total { font-weight: 800; font-size: 1.15rem; }
-.con-barra { padding-bottom: 110px; }
 
 /* ---------- tablas / reportes ---------- */
 .kpis { display: grid; gap: 10px; grid-template-columns: repeat(2, 1fr); }
@@ -352,17 +339,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .tiempo { font-weight: 700; font-variant-numeric: tabular-nums; }
 .tiempo.alerta { color: var(--peligro); }
 
-.pedido { border: 2px solid var(--primario-2); }
 .linea-pedido { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--borde); }
 .linea-pedido:last-child { border-bottom: 0; }
 .linea-pedido .info { flex: 1; min-width: 0; cursor: pointer; }
 .linea-pedido .nombre { font-weight: 600; }
 
-.btn-mas {
-  width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--primario); color: #fff;
-  font-size: 1.4rem; font-weight: 700; cursor: pointer; flex: none;
-}
-.btn-mas:disabled { opacity: .4; cursor: not-allowed; }
 .cuenta {
   min-width: 30px; height: 30px; border-radius: 15px; background: var(--acento); color: #1d2433;
   font-weight: 800; display: inline-flex; align-items: center; justify-content: center; padding: 0 8px;
@@ -475,3 +456,54 @@ div.carta-resumen { cursor: default; max-width: 320px; }
 button.insignia { cursor: pointer; }
 .insignia.si { background: #dcfce7; color: #166534; }
 .insignia.no { background: #fde8e8; color: var(--peligro); }
+
+/* ---------- editor de comanda: carta (izq.) + comanda (der.) ---------- */
+main:has(.editor) { max-width: none; padding-bottom: 16px; }
+.editor-cab { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--borde); }
+.editor-cab .titulo { font-size: 1.15rem; }
+.editor-titulo { flex: 1 1 200px; min-width: 0; } /* si no entra, el selector En mesa/Para llevar baja a otra fila */
+.total-cab { color: var(--primario); white-space: nowrap; }
+.editor-cuerpo { display: grid; gap: 16px; grid-template-columns: 1fr; }
+.editor-carta > * + * { margin-top: 12px; }
+.pestanas { display: flex; gap: 4px; border-bottom: 1px solid var(--borde); }
+.pestanas button { border: 0; background: none; padding: 10px 16px; font: inherit; font-weight: 600; color: var(--suave); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.pestanas button.activo { color: var(--primario); border-bottom-color: var(--primario); }
+.chip.chico { padding: 6px 12px; font-size: .85rem; }
+.grid-platos { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.plato {
+  position: relative; display: flex; flex-direction: column; gap: 4px; text-align: left; font: inherit; color: inherit;
+  background: #fff; border: 1px solid var(--borde); border-radius: 12px; padding: 12px 14px; cursor: pointer; min-height: 112px;
+}
+.plato:active { transform: scale(.98); }
+.plato:hover { border-color: var(--primario-2); }
+.plato .desc { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: .8rem; }
+.plato .pie { margin-top: auto; display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.plato .precio { color: var(--primario); font-size: 1.05rem; }
+.plato .pie small { font-size: .72rem; text-align: right; }
+.plato .cuenta { position: absolute; top: -8px; right: -8px; }
+.plato.sin-stock { opacity: .5; cursor: not-allowed; }
+.editor-pedido { display: flex; flex-direction: column; gap: 10px; }
+.lista-pedido { min-height: 120px; }
+.lista-pedido .vacio { padding: 30px 10px; }
+.total-pedido { font-size: 1.1rem; border-top: 1px solid var(--borde); padding-top: 10px; }
+.acciones-pedido .btn { min-height: 48px; white-space: nowrap; }
+@media (max-width: 480px) { .solo-ancho { display: none; } }
+@media (min-width: 900px) {
+  .editor-cuerpo { grid-template-columns: 1fr 360px; align-items: start; }
+  .editor-pedido { position: sticky; top: 72px; max-height: calc(100vh - 90px); }
+  .lista-pedido { flex: 1; overflow-y: auto; }
+  /* panel angosto: "Enviar a cocina" ocupa su propia fila */
+  .acciones-pedido { flex-wrap: wrap; }
+  .acciones-pedido .btn { flex: 1; }
+  .acciones-pedido #enviar { flex-basis: 100%; order: -1; }
+}
+@media (max-width: 899px) {
+  /* celular/tablet vertical: la comanda va arriba y los botones quedan fijos abajo */
+  .editor { padding-bottom: 80px; }
+  .editor-pedido { order: -1; }
+  .acciones-pedido {
+    position: fixed; left: var(--lat, 0); right: 0; bottom: 0; z-index: 16; background: #fff;
+    border-top: 1px solid var(--borde); padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    box-shadow: 0 -4px 14px rgba(16,24,40,.08);
+  }
+}

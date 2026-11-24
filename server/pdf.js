@@ -113,15 +113,17 @@ function ticketCocina(c, momento) {
   return b;
 }
 
-/** Comprobante de pago (interno) para el cliente. */
-function comprobante({ cobro, comandas, config, cajero }) {
+/** Comprobante de pago (interno) para el cliente. Sin cobro = precuenta (antes de pagar). */
+function comprobante({ cobro, comandas, config, cajero, ahora }) {
   const dinero = (n) => `${config.moneda} ${Number(n || 0).toFixed(2)}`;
   const b = [LOGO ? imagen(LOGO, ANCHO_LOGO) : centro(config.nombreRestaurante, 14, true)];
   if (config.ruc) b.push(centro(`RUC ${config.ruc}`, 9));
   if (config.direccion) b.push(centro(config.direccion, 9));
   if (config.telefono) b.push(centro(`Tel. ${config.telefono}`, 9));
-  b.push(linea(), centro('COMPROBANTE DE PAGO', 11, true), centro(`N° ${String(cobro.id).padStart(6, '0')}`, 10));
-  b.push(centro(`${cobro.creado_en.slice(0, 10).split('-').reverse().join('/')}  ${cobro.creado_en.slice(11, 16)}`, 9), linea());
+  const fecha = cobro?.creado_en || ahora;
+  b.push(linea(), centro(cobro ? 'COMPROBANTE DE PAGO' : 'PRECUENTA', 11, true));
+  if (cobro) b.push(centro(`N° ${String(cobro.id).padStart(6, '0')}`, 10));
+  b.push(centro(`${fecha.slice(0, 10).split('-').reverse().join('/')}  ${fecha.slice(11, 16)}`, 9), linea());
 
   const primera = comandas[0];
   b.push(texto(primera.tipo === 'local' ? `Mesa: ${primera.mesa_numero}${primera.mesa_piso ? ` (${primera.mesa_piso})` : ''}` : `Para llevar${primera.cliente ? `: ${primera.cliente}` : ''}`, 10, { negrita: true }));
@@ -142,7 +144,9 @@ function comprobante({ cobro, comandas, config, cajero }) {
     b.push(fila(`${g.cantidad} x ${g.nombre}`, dinero(g.precio * g.cantidad), 10));
     if (g.det) b.push(texto(g.det, 8, { sep: 3, sangria: 14 }));
   }
-  b.push(linea(), fila('TOTAL', dinero(cobro.total), 14, true), espacio(4));
+  const total = cobro ? cobro.total : comandas.reduce((s, c) => s + c.total, 0);
+  b.push(linea(), fila('TOTAL', dinero(total), 14, true), espacio(4));
+  if (!cobro) return [...b, linea(), centro('Documento no válido como comprobante de pago', 8)];
   b.push(fila('Forma de pago', cobro.metodo, 10));
   if (cobro.recibido != null) {
     b.push(fila('Recibido', dinero(cobro.recibido), 10), fila('Vuelto', dinero(cobro.recibido - cobro.total), 10, true));

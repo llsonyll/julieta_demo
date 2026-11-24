@@ -1056,6 +1056,20 @@ app.post(
   })
 );
 
+// Precuenta: lo que va consumiendo la mesa, antes de cobrar. ?ids=1,2 (comandas)
+app.get(
+  '/api/precuenta.pdf',
+  rol('admin', 'mozo', 'caja'),
+  ruta(async (req, res) => {
+    const comandas = obtenerComandas(listaIds(req.query.ids)).filter((c) => c.estado !== 'cancelado' && !c.pagada);
+    if (!comandas.length) fail(404, 'No hay consumo pendiente para la precuenta');
+    const pdf = await generarPDF([comprobante({ comandas, config: CONFIG, ahora: ahora() })], 'Precuenta');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="precuenta-${comandas.map((c) => c.numero_dia).join('-')}.pdf"`);
+    res.end(pdf);
+  })
+);
+
 app.get(
   '/api/cobros/:id/comprobante.pdf',
   rol('admin', 'caja'),
