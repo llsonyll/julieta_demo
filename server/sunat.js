@@ -126,7 +126,15 @@ function extraerXML(contenido) {
 }
 
 function leerComprobante(contenido) {
-  const texto = extraerXML(contenido).toString('utf8').replace(/^\uFEFF/, '');
+  // SOL declara ISO-8859-1 pero suele escribir en UTF-8: se prueba UTF-8 y, si no es válido, Latin-1
+  const xml = extraerXML(contenido);
+  let texto;
+  try {
+    texto = new TextDecoder('utf-8', { fatal: true }).decode(xml);
+  } catch {
+    texto = xml.toString('latin1');
+  }
+  texto = texto.replace(/^\uFEFF/, '');
   const raiz = leerXML(texto);
   if (!raiz) throw new Error('El archivo no es un XML válido');
   if (raiz.nombre === 'CreditNote' || raiz.nombre === 'DebitNote') throw new Error('Es una nota de crédito o débito: por ahora solo se imprimen boletas y facturas');
@@ -144,10 +152,14 @@ function leerComprobante(contenido) {
   const idCliente = ruta(cliente, 'PartyIdentification/ID');
   const dirCliente = ruta(cliente, 'PartyLegalEntity/RegistrationAddress');
 
-  // impuestos del comprobante (TaxTotal directo de la raíz, no los de cada línea)
+  // impuestos del comprobante: del TaxTotal de la raíz; si no trae desglose (como en las boletas
+  // de SEE-SOL, que solo ponen el monto), se suman los de cada línea
   const totalesImp = { gravada: 0, exonerada: 0, inafecta: 0, gratuita: 0, icbper: 0, isc: 0 };
   const taxTotal = hijo(raiz, 'TaxTotal');
-  for (const sub of hijos(taxTotal, 'TaxSubtotal')) {
+  const subtotales = hijos(taxTotal, 'TaxSubtotal').length
+    ? hijos(taxTotal, 'TaxSubtotal')
+    : hijos(raiz, 'InvoiceLine').flatMap((l) => hijos(hijo(l, 'TaxTotal'), 'TaxSubtotal'));
+  for (const sub of subtotales) {
     const codigo = txt(sub, 'TaxCategory/TaxScheme/ID');
     if (codigo === '1000') totalesImp.gravada += num(sub, 'TaxableAmount');
     else if (codigo === '9997') totalesImp.exonerada += num(sub, 'TaxableAmount');
@@ -156,7 +168,7 @@ function leerComprobante(contenido) {
     else if (codigo === '7152') totalesImp.icbper += num(sub, 'TaxAmount');
     else if (codigo === '2000') totalesImp.isc += num(sub, 'TaxAmount');
   }
-  const igv = hijos(taxTotal, 'TaxSubtotal')
+  const igv = subtotales
     .filter((s) => txt(s, 'TaxCategory/TaxScheme/ID') === '1000')
     .reduce((s, x) => s + num(x, 'TaxAmount'), 0);
 
@@ -184,7 +196,11 @@ function leerComprobante(contenido) {
 
   const total = num(raiz, 'LegalMonetaryTotal/PayableAmount');
   const notas = hijos(raiz, 'Note');
-  const letras = (notas.find((n) => n.atributos.languageLocaleID === '1000') || notas[0])?.texto.trim() || '';
+  // monto en letras (SOL ya lo trae con "SON:" adelante)
+  const letras = ((notas.find((n) => n.atributos.languageLocaleID === '1000') || notas[0])?.texto || '')
+    .replace(/^\s*SON\s*:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
   const formaPago = hijos(raiz, 'PaymentTerms').find((p) => txt(p, 'ID') === 'FormaPago');
 
   return {
