@@ -23,6 +23,7 @@ const S = {
   fechaCarta: null,
   fechaReporte: null,
   audio: null,
+  ticketera: { activa: false, caja: false, autoComandas: false, pendientes: 0, errores: 0 },
 };
 
 const EN_COCINA = ['enviado_cocina', 'en_proceso', 'esperando_entrega'];
@@ -120,6 +121,55 @@ function imprimirPDF(url, ventana) {
     return true;
   }
   return !!window.open(url, '_blank');
+}
+
+// ---------------- ticketera térmica ----------------
+// Con ticketera configurada (Gestión → Impresora), los tickets, precuentas y comprobantes
+// los imprime el servidor directo en la impresora; sin ella, se usan los PDF de siempre.
+const usaTicketeraCaja = () => !!S.ticketera?.caja;
+
+async function cargarTicketera() {
+  try {
+    actualizarTicketera(await api('GET', '/api/impresora/estado'), false);
+  } catch {}
+}
+
+function actualizarTicketera(d, avisar = true) {
+  const antes = S.ticketera || {};
+  S.ticketera = d;
+  const el = $('#estado-impresora');
+  if (el) {
+    el.classList.toggle('oculto', !d.activa);
+    el.classList.toggle('falla', d.errores > 0);
+    el.title = !d.activa ? '' : d.errores > 0 ? `Ticketera sin respuesta: ${d.ultimoError}` : d.pendientes ? `Ticketera: ${d.pendientes} en cola` : 'Ticketera lista';
+    const n = $('.contador', el);
+    if (n) {
+      n.textContent = d.pendientes + d.errores;
+      n.classList.toggle('oculto', !(d.pendientes + d.errores));
+    }
+  }
+  // aviso cuando la impresora deja de responder (una vez, no en cada reintento)
+  if (avisar && d.errores > 0 && !(antes.errores > 0) && ['admin', 'caja', 'cocina'].includes(S.me?.rol)) {
+    sonar(2);
+    toast(`⚠️ La ticketera no responde: ${d.ultimoError || 'revise que esté encendida'}. Se reintentará sola.`, 'error', 8000);
+  }
+  if (avisar && antes.errores > 0 && !d.errores) toast('🖨️ Ticketera conectada de nuevo', 'ok');
+  if (avisar && ['tickets', 'admin'].includes(S.vista?.nombre)) {
+    clearTimeout(recargaPendiente);
+    recargaPendiente = setTimeout(recargarVista, 250);
+  }
+}
+
+/** Manda algo a la ticketera y avisa el resultado */
+async function aTicketera(url, cuerpo, mensaje) {
+  try {
+    await api('POST', url, cuerpo);
+    toast(`🖨️ ${mensaje}`, 'ok', 2200);
+    return true;
+  } catch (e) {
+    toast(e.message, 'error');
+    return false;
+  }
 }
 
 // ---------------- avisos ----------------
@@ -288,7 +338,7 @@ function abrirSSE() {
       }, 4000);
     }
   };
-  for (const ev of ['comandas', 'mesas', 'productos', 'turnos']) {
+  for (const ev of ['comandas', 'mesas', 'productos', 'turnos', 'impresora']) {
     es.addEventListener(ev, (e) => {
       let d = {};
       try {
@@ -301,6 +351,7 @@ function abrirSSE() {
 
 let recargaPendiente = null;
 function alEvento(ev, d) {
+  if (ev === 'impresora') return actualizarTicketera(d);
   if (ev === 'comandas') {
     notificar(d);
     actualizarContadores();
@@ -320,6 +371,8 @@ function notificar(d) {
   const enTickets = S.vista?.nombre === 'tickets';
   if (rol === 'cocina' || rol === 'caja' || (rol === 'admin' && enTickets)) {
     const donde = d.tipo === 'llevar' ? 'para llevar' : `mesa ${d.mesa}`;
+    // con la ticketera imprimiendo sola, solo se informa (sin alarma)
+    if (S.ticketera?.autoComandas) return toast(`🖨️ Comanda #${d.numero} (${donde}) enviada a la ticketera`, 'aviso', 3500);
     sonar(3);
     toast(`🖨️ Ticket ${d.accion === 'editada' ? 'modificado' : 'nuevo'} #${d.numero} (${donde})`, 'aviso', 5000);
   }
@@ -464,6 +517,7 @@ function renderShell() {
           <button class="btn-menu" data-accion="menu-movil" aria-label="Menú">${svg('<path d="M4 6h16M4 12h16M4 18h16"/>', 22)}</button>
           <h1 id="titulo-vista" class="crecer"></h1>
           <span class="reloj" id="reloj"></span>
+          ${TABS[rol].includes('tickets') ? `<a class="impresora-sup oculto" id="estado-impresora" href="#/tickets" aria-label="Estado de la ticketera">${svg('<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/>')}<span class="contador oculto"></span></a>` : ''}
           ${TABS[rol].includes('tickets') ? `<a class="campana" href="#/tickets" aria-label="Tickets pendientes">${svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/>')}<span class="contador oculto"></span></a>` : ''}
           <button class="usuario-sup" data-accion="menu-usuario" aria-label="Menú de usuario">
             <span class="avatar" style="background:${COLORES_AVATAR[S.me.id % COLORES_AVATAR.length]}">${esc(iniciales(S.me.nombre))}</span>
@@ -489,6 +543,7 @@ function iniciarApp() {
   if (!location.hash || location.hash === '#/') location.hash = `#/${TABS[S.me.rol][0]}`;
   else navegar();
   actualizarContadores();
+  cargarTicketera();
 }
 
 // ---------------- enrutador ----------------
@@ -634,7 +689,7 @@ function abrirCobro(comandas, titulo) {
   );
   $('#cobrar', m).onclick = async (e) => {
     e.target.disabled = true;
-    const ventana = prepararVentana();
+    const ventana = usaTicketeraCaja() ? null : prepararVentana();
     try {
       const cobro = await api('POST', '/api/cobros', {
         comanda_ids: comandas.map((c) => c.id),
@@ -643,7 +698,8 @@ function abrirCobro(comandas, titulo) {
       });
       cerrarModal();
       toast(`Cobro registrado (${metodo})`, 'ok');
-      imprimirPDF(`/api/cobros/${cobro.id}/comprobante.pdf`, ventana);
+      if (usaTicketeraCaja()) aTicketera('/api/imprimir/comprobante', { cobro_id: cobro.id }, 'Comprobante enviado a la ticketera');
+      else imprimirPDF(`/api/cobros/${cobro.id}/comprobante.pdf`, ventana);
       recargarVista();
     } catch (err) {
       ventana?.close();
@@ -720,7 +776,11 @@ const ACCIONES = {
       toast(e.message, 'error');
     }
   },
-  comprobante: (el) => imprimirPDF(`/api/cobros/${el.dataset.cobro}/comprobante.pdf`),
+  comprobante: (el) =>
+    usaTicketeraCaja()
+      ? aTicketera('/api/imprimir/comprobante', { cobro_id: Number(el.dataset.cobro) }, 'Comprobante enviado a la ticketera')
+      : imprimirPDF(`/api/cobros/${el.dataset.cobro}/comprobante.pdf`),
+  'comprobante-pdf': (el) => imprimirPDF(`/api/cobros/${el.dataset.cobro}/comprobante.pdf`),
   'anular-cobro': async (el) => {
     if (!(await confirmar('¿Anular este cobro? Las comandas quedarán como no pagadas.', { ok: 'Anular cobro', peligro: true }))) return;
     try {
@@ -733,6 +793,10 @@ const ACCIONES = {
   },
   'imprimir-ticket': async (el) => {
     const ids = el.dataset.ids;
+    if (S.ticketera?.activa) {
+      const n = ids.split(',').length;
+      return aTicketera('/api/imprimir/comanda', { ids: ids.split(',').map(Number) }, n > 1 ? `${n} tickets enviados a la ticketera` : 'Ticket enviado a la ticketera');
+    }
     imprimirPDF(`/api/tickets.pdf?ids=${ids}`);
     try {
       await api('POST', '/api/tickets/impresos', { ids: ids.split(',').map(Number) });
@@ -870,7 +934,8 @@ async function vComandaDetalle(main, r) {
     if (['admin', 'caja', 'cocina'].includes(rol))
       acciones.push(`<button class="btn chico" data-accion="imprimir-ticket" data-ids="${c.id}">🖨️ ${c.ticket_impreso ? 'Reimprimir' : 'Imprimir'} ticket</button>`);
   if (c.pagada && c.cobro_id && ['admin', 'caja'].includes(rol)) {
-    acciones.push(`<button class="btn chico" data-accion="comprobante" data-cobro="${c.cobro_id}">🧾 Comprobante</button>`);
+    acciones.push(`<button class="btn chico" data-accion="comprobante" data-cobro="${c.cobro_id}">🧾 ${usaTicketeraCaja() ? 'Imprimir comprobante' : 'Comprobante'}</button>`);
+    if (usaTicketeraCaja()) acciones.push(`<button class="btn chico" data-accion="comprobante-pdf" data-cobro="${c.cobro_id}">PDF</button>`);
     acciones.push(`<button class="btn chico" data-accion="anular-cobro" data-cobro="${c.cobro_id}">Anular cobro</button>`);
   }
   const puedeCancelar =
@@ -1253,14 +1318,15 @@ async function vEditorComanda(main, r, esRecarga) {
   // La precuenta sale de lo guardado: de la mesa entera, o de esta comanda si es para llevar
   async function precuenta() {
     if (JSON.stringify(b.lineas) !== lineasGuardadas) return toast('Guarde los cambios antes de imprimir la precuenta', 'error');
-    const ventana = prepararVentana(); // antes del await, para que el celular no bloquee la ventana
+    const ventana = usaTicketeraCaja() ? null : prepararVentana(); // antes del await, para que el celular no bloquee la ventana
     try {
       const ids =
         b.tipo === 'local' && b.mesa_id
           ? (await api('GET', '/api/comandas?vista=por_cobrar')).filter((c) => c.mesa_id === b.mesa_id).map((c) => c.id)
           : b.id ? [b.id] : [];
       if (!ids.length) throw new Error('Todavía no hay comandas guardadas para la precuenta');
-      imprimirPDF(`/api/precuenta.pdf?ids=${ids.join(',')}`, ventana);
+      if (usaTicketeraCaja()) aTicketera('/api/imprimir/precuenta', { ids }, 'Precuenta enviada a la ticketera');
+      else imprimirPDF(`/api/precuenta.pdf?ids=${ids.join(',')}`, ventana);
     } catch (e) {
       ventana?.close();
       toast(e.message, 'error');
@@ -1319,7 +1385,9 @@ async function vTickets(main) {
   );
   const pendientes = lista.filter((c) => !c.ticket_impreso);
   const impresos = lista.filter((c) => c.ticket_impreso).reverse();
-  const auto = leerAuto() && imprimeDirecto();
+  const tq = S.ticketera?.activa;
+  const auto = !tq && leerAuto() && imprimeDirecto();
+  const panelCola = tq ? await panelTicketera() : '';
   const ticket = (c) => `
     <div class="tarjeta ticket-prev ${c.ticket_impreso ? 'impreso' : ''}">
       <div class="fila entre"><span class="num">#${c.numero_dia} · ${lugar(c)}</span>
@@ -1336,19 +1404,23 @@ async function vTickets(main) {
     <div class="pila">
       <div class="fila entre envolver"><h2>Tickets de cocina</h2>
         ${pendientes.length ? `<button class="btn primario" data-accion="imprimir-ticket" data-ids="${pendientes.map((c) => c.id).join(',')}">🖨️ Imprimir ${pendientes.length} pendiente(s)</button>` : ''}</div>
+      ${panelCola}
       ${
-        imprimeDirecto()
+        tq
+          ? ''
+          : imprimeDirecto()
           ? `<label class="check tarjeta"><input type="checkbox" id="auto" ${auto ? 'checked' : ''}>
               Imprimir automáticamente cada ticket nuevo (deje esta pantalla abierta en la PC de la impresora)</label>`
           : '<div class="tarjeta suave peq">Al imprimir se abre el PDF del ticket: use la opción Imprimir del navegador. Para imprimir con un toque, use Chrome o Edge en la computadora de la impresora.</div>'
       }
-      <h3>Por imprimir (${pendientes.length})</h3>
+      <h3>${tq ? 'En cola de la ticketera' : 'Por imprimir'} (${pendientes.length})</h3>
       ${pendientes.length ? `<div class="grid">${pendientes.map(ticket).join('')}</div>` : '<div class="vacio">No hay tickets pendientes. 👍</div>'}
       <h3>En cocina · ya impresos (${impresos.length})</h3>
       ${impresos.length ? `<div class="grid">${impresos.map(ticket).join('')}</div>` : '<div class="suave">Ninguno.</div>'}
     </div>`;
   const chk = $('#auto', main);
   if (chk) chk.onchange = () => guardarAuto(chk.checked);
+  enlazarPanelTicketera(main);
   const tick = () =>
     $$('[data-desde]', main).forEach((el) => {
       const m = minutosDesde(el.dataset.desde);
@@ -1366,6 +1438,53 @@ async function vTickets(main) {
       await api('POST', '/api/tickets/impresos', { ids });
     } catch {}
   }
+}
+
+// ---------- Cola de la ticketera (en la pantalla Tickets) ----------
+
+async function panelTicketera() {
+  const t = S.ticketera;
+  let cola = [];
+  if (puede('admin', 'caja')) {
+    try {
+      cola = (await api('GET', '/api/impresora')).cola.filter((x) => ['pendiente', 'error'].includes(x.estado));
+    } catch {}
+  }
+  const estado = t.errores
+    ? `<b class="error-txt">⚠️ La ticketera no responde.</b> ${esc(t.ultimoError || '')}<br><span class="suave peq">Se reintenta sola cada pocos segundos. Revise que esté encendida, con papel y conectada.</span>`
+    : t.pendientes
+    ? `🖨️ Imprimiendo… ${t.pendientes} en cola`
+    : `✅ Ticketera lista. ${t.autoComandas ? 'Las comandas se imprimen solas al enviarse a cocina.' : 'Las comandas se imprimen al tocar "Imprimir".'}`;
+  return `<div class="tarjeta panel-ticketera ${t.errores ? 'falla' : ''}">
+      <div class="fila entre envolver"><div>${estado}</div>
+        <div class="fila">${t.errores ? '<button class="btn chico primario" data-tq="reintentar">Reintentar ahora</button>' : ''}
+        ${puede('admin', 'caja') ? '<button class="btn chico" data-tq="prueba">Imprimir prueba</button>' : ''}</div></div>
+      ${
+        cola.length
+          ? `<ul class="cola-impresion">${cola
+              .map(
+                (x) => `<li class="${x.estado}"><span>${esc(x.titulo)}
+                  <small class="suave">${hora(x.creado_en)}${x.intentos ? ` · ${x.intentos} intento(s)` : ''}</small></span>
+                  <button class="btn chico" data-tq-cancelar="${x.id}" title="Quitar de la cola">Quitar</button></li>`
+              )
+              .join('')}</ul>`
+          : ''
+      }
+    </div>`;
+}
+
+function enlazarPanelTicketera(cont) {
+  const b = $('[data-tq="reintentar"]', cont);
+  if (b) b.onclick = () => api('POST', '/api/impresora/reintentar', {}).catch((e) => toast(e.message, 'error'));
+  const p = $('[data-tq="prueba"]', cont);
+  if (p) p.onclick = () => aTicketera('/api/impresora/prueba', {}, 'Ticket de prueba enviado');
+  $$('[data-tq-cancelar]', cont).forEach(
+    (x) =>
+      (x.onclick = async () => {
+        if (!(await confirmar('¿Quitar este ticket de la cola? No se imprimirá.', { ok: 'Quitar', peligro: true }))) return;
+        api('POST', '/api/impresora/cancelar', { id: Number(x.dataset.tqCancelar) }).catch((e) => toast(e.message, 'error'));
+      })
+  );
 }
 
 // ---------- Mesas ----------
@@ -1537,7 +1656,11 @@ async function vMesas(main) {
         const cm = $('#cobrar-mesa', modal);
         if (cm) cm.onclick = () => abrirCobro(cs, `Cobrar mesa ${p.etiqueta}`);
         const pc = $('#precuenta-mesa', modal);
-        if (pc) pc.onclick = () => imprimirPDF(`/api/precuenta.pdf?ids=${cs.map((c) => c.id).join(',')}`);
+        if (pc)
+          pc.onclick = () =>
+            usaTicketeraCaja()
+              ? aTicketera('/api/imprimir/precuenta', { ids: cs.map((c) => c.id) }, 'Precuenta enviada a la ticketera')
+              : imprimirPDF(`/api/precuenta.pdf?ids=${cs.map((c) => c.id).join(',')}`);
         const sp = $('#separar', modal);
         if (sp)
           sp.onclick = async () => {
@@ -1778,14 +1901,141 @@ async function vReporte(main) {
 
 // ---------- Gestión (admin) ----------
 async function vAdmin(main) {
-  const tabs = [['carta', '📅 Carta del día'], ['platos', '🍲 Platos'], ['guarniciones', '🥗 Guarniciones'], ['mesas', '🍽️ Mesas'], ['usuarios', '👤 Usuarios']];
+  const tabs = [['carta', '📅 Carta del día'], ['platos', '🍲 Platos'], ['guarniciones', '🥗 Guarniciones'], ['mesas', '🍽️ Mesas'], ['usuarios', '👤 Usuarios'], ['impresora', '🖨️ Impresora']];
   main.innerHTML = `<div class="pila">${chips(tabs, S.adminTab, 'at')}<div id="admin-cont"></div></div>`;
   enlazarChips(main, 'at', (v) => {
     S.adminTab = v;
     vAdmin(main);
   });
   const cont = $('#admin-cont', main);
-  await { carta: adminCarta, platos: adminPlatos, guarniciones: adminGuarniciones, mesas: adminMesas, usuarios: adminUsuarios }[S.adminTab](cont);
+  await { carta: adminCarta, platos: adminPlatos, guarniciones: adminGuarniciones, mesas: adminMesas, usuarios: adminUsuarios, impresora: adminImpresora }[S.adminTab](cont);
+}
+
+/** Gestión → Impresora: conexión de la ticketera térmica y qué imprime */
+async function adminImpresora(cont) {
+  const { ajustes: a, estado, cola, windows } = await api('GET', '/api/impresora');
+  const opt = (lista, actual) => lista.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(actual) ? 'selected' : ''}>${esc(t)}</option>`).join('');
+  const modos = [
+    ['ninguna', 'Sin ticketera (PDF desde el navegador)'],
+    ['com', 'Bluetooth o USB (puerto COM)'],
+    ['windows', 'Impresora instalada en Windows'],
+    ['red', 'Impresora de red (IP)'],
+    ['archivo', 'Archivo (solo pruebas, sin impresora)'],
+  ];
+  const ESTADO_COLA = { pendiente: 'En cola', error: 'Sin respuesta', impreso: 'Impreso', cancelado: 'Quitado' };
+  cont.innerHTML = `
+    <div class="pila">
+      <form class="tarjeta pila" id="form-impresora" novalidate>
+        <h3>🖨️ Ticketera térmica</h3>
+        <p class="suave peq">El servidor imprime directo en la ticketera (comandas, precuentas y comprobantes), sin abrir el diálogo
+          del navegador, y corta el papel. Si la impresora no responde, los tickets esperan en cola y se reintentan solos.</p>
+        <label class="campo"><span>Conexión</span><select name="modo">${opt(modos, a.modo)}</select></label>
+        ${!windows ? '<div class="aviso-suave">El servidor no está en Windows: las opciones "puerto COM" e "impresora instalada en Windows" solo funcionan con el servidor en Windows.</div>' : ''}
+
+        <div class="pila" data-modo="com">
+          <label class="campo"><span>Puerto COM</span><input name="puerto" list="lista-puertos" value="${esc(a.puerto)}" placeholder="COM5" autocomplete="off"></label>
+          <small class="suave">Bluetooth: empareje la impresora en Windows (Configuración → Dispositivos → Bluetooth). En "Más opciones de
+            Bluetooth → Puertos COM" use el puerto <b>saliente</b> de la impresora. También puede usar "Buscar dispositivos".</small>
+          <label class="campo"><span>Velocidad (baudios)</span><select name="baudios">${opt([[9600, '9600 (normal)'], [19200, '19200'], [38400, '38400'], [115200, '115200']], a.baudios)}</select></label>
+        </div>
+        <div class="pila" data-modo="windows">
+          <label class="campo"><span>Nombre de la impresora en Windows</span><input name="nombre" list="lista-impresoras" value="${esc(a.nombre)}" placeholder="XP-80C" autocomplete="off"></label>
+          <small class="suave">Debe estar instalada con el controlador del fabricante (Panel de control → Dispositivos e impresoras).</small>
+        </div>
+        <div class="pila" data-modo="red">
+          <label class="campo"><span>IP de la impresora</span><input name="host" value="${esc(a.host)}" placeholder="192.168.1.50" autocomplete="off"></label>
+          <label class="campo"><span>Puerto</span><input name="puertoRed" type="number" value="${esc(a.puertoRed)}"></label>
+        </div>
+        <div data-modo="com windows">
+          <button type="button" class="btn chico" id="buscar-disp">🔎 Buscar dispositivos</button>
+          <div id="dispositivos" class="suave peq"></div>
+        </div>
+        <datalist id="lista-puertos"></datalist><datalist id="lista-impresoras"></datalist>
+
+        <div class="pila" data-modo="com windows red archivo">
+          <h3>Papel</h3>
+          <label class="campo"><span>Ancho</span><select name="columnas">${opt([[48, '80 mm · 48 caracteres (habitual)'], [42, '80 mm · 42 caracteres'], [32, '58 mm · 32 caracteres']], a.columnas)}</select></label>
+          <label class="campo"><span>Acentos y ñ (página de códigos)</span><select name="pagina">${opt([['cp850', 'PC850 (recomendado)'], ['wpc1252', 'Windows-1252']], a.pagina)}</select></label>
+          <small class="suave">Si en el ticket de prueba los acentos salen como símbolos raros, cambie esta opción.</small>
+          <label class="check"><input type="checkbox" name="cortar" ${a.cortar ? 'checked' : ''}> Cortar el papel al final de cada ticket</label>
+          <label class="check"><input type="checkbox" name="logo" ${a.logo ? 'checked' : ''}> Imprimir el logo en precuentas y comprobantes</label>
+
+          <h3>Qué imprime</h3>
+          <label class="check"><input type="checkbox" name="autoComandas" ${a.autoComandas ? 'checked' : ''}> Imprimir cada comanda automáticamente al enviarla a cocina</label>
+          <label class="campo"><span>Copias de cada comanda</span><select name="copiasComanda">${opt([[1, '1'], [2, '2'], [3, '3']], a.copiasComanda)}</select></label>
+          <label class="check"><input type="checkbox" name="caja" ${a.caja ? 'checked' : ''}> Imprimir también precuentas y comprobantes de pago</label>
+        </div>
+        <div class="error" data-err></div>
+        <div class="fila envolver">
+          <button class="btn primario crecer">Guardar</button>
+          <button type="button" class="btn" id="probar" ${estado.activa ? '' : 'disabled'}>Imprimir prueba</button>
+        </div>
+      </form>
+
+      <div class="tarjeta">
+        <div class="fila entre envolver"><h3>Últimos trabajos</h3>
+          ${estado.errores ? '<button class="btn chico primario" id="reintentar-todo">Reintentar ahora</button>' : ''}</div>
+        ${estado.errores ? `<div class="aviso-suave error-txt">⚠️ ${esc(estado.ultimoError)}</div>` : ''}
+        ${
+          cola.length
+            ? `<ul class="cola-impresion">${cola
+                .slice(0, 20)
+                .map(
+                  (x) => `<li class="${x.estado}"><span>${esc(x.titulo)}
+                    <small class="suave">${hora(x.creado_en)} · ${ESTADO_COLA[x.estado] || x.estado}${x.error && x.estado === 'error' ? ` · ${esc(x.error)}` : ''}</small></span>
+                    ${['pendiente', 'error'].includes(x.estado) ? `<button class="btn chico" data-quitar="${x.id}">Quitar</button>` : ''}</li>`
+                )
+                .join('')}</ul>`
+            : '<div class="suave">Todavía no se imprimió nada.</div>'
+        }
+      </div>
+    </div>`;
+
+  const f = $('#form-impresora', cont);
+  const mostrar = () =>
+    $$('[data-modo]', f).forEach((el) => el.classList.toggle('oculto', !el.dataset.modo.split(' ').includes(f.modo.value)));
+  f.modo.onchange = mostrar;
+  mostrar();
+
+  $('#buscar-disp', cont).onclick = async (e) => {
+    const caja = $('#dispositivos', cont);
+    e.target.disabled = true;
+    caja.textContent = 'Buscando…';
+    try {
+      const d = await api('GET', '/api/impresora/dispositivos');
+      $('#lista-puertos', cont).innerHTML = d.puertos.map((p) => `<option value="${esc(p.puerto)}">${esc(p.nombre)}</option>`).join('');
+      $('#lista-impresoras', cont).innerHTML = d.impresoras.map((n) => `<option value="${esc(n)}">`).join('');
+      caja.innerHTML = d.aviso
+        ? esc(d.aviso)
+        : `<b>Puertos COM:</b> ${d.puertos.map((p) => `<button type="button" class="chip" data-usar-puerto="${esc(p.puerto)}">${esc(p.nombre)}</button>`).join(' ') || 'ninguno'}<br>
+           <b>Impresoras de Windows:</b> ${d.impresoras.map((n) => `<button type="button" class="chip" data-usar-impresora="${esc(n)}">${esc(n)}</button>`).join(' ') || 'ninguna'}`;
+      $$('[data-usar-puerto]', caja).forEach((b) => (b.onclick = () => ((f.puerto.value = b.dataset.usarPuerto), (f.modo.value = 'com'), mostrar())));
+      $$('[data-usar-impresora]', caja).forEach((b) => (b.onclick = () => ((f.nombre.value = b.dataset.usarImpresora), (f.modo.value = 'windows'), mostrar())));
+    } catch (err) {
+      caja.textContent = err.message;
+    }
+    e.target.disabled = false;
+  };
+
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const datos = {};
+    for (const el of f.elements) if (el.name) datos[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+    try {
+      await api('PUT', '/api/impresora', datos);
+      toast('Ajustes de la ticketera guardados', 'ok');
+      await cargarTicketera();
+      adminImpresora(cont);
+    } catch (err) {
+      $('[data-err]', f).textContent = err.message;
+    }
+  };
+  $('#probar', cont).onclick = () => aTicketera('/api/impresora/prueba', {}, 'Ticket de prueba enviado');
+  const rt = $('#reintentar-todo', cont);
+  if (rt) rt.onclick = () => api('POST', '/api/impresora/reintentar', {}).catch((err) => toast(err.message, 'error'));
+  $$('[data-quitar]', cont).forEach(
+    (x) => (x.onclick = () => api('POST', '/api/impresora/cancelar', { id: Number(x.dataset.quitar) }).then(() => adminImpresora(cont)).catch((err) => toast(err.message, 'error')))
+  );
 }
 
 /** Formulario de plato (crear o editar) */

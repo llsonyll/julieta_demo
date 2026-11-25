@@ -67,9 +67,11 @@ hasta que se entreguen; su ticket vuelve a quedar pendiente de impresión).
   guarnición resaltados ("CAMBIO: Yuca frita (en vez de Arroz)", "SIN ARROZ") y notas.
 - **Comprobante:** logo del local (`server/logo-comprobante.png`, en negro para impresora térmica), datos del local (de `config.json`), detalle, total, forma de pago, recibido y vuelto.
   Es un **comprobante interno**: no reemplaza a la boleta o factura electrónica.
-- Ambos son PDF de 80 mm de ancho: sirven en una impresora térmica de tickets o en una impresora común.
-- Con **Chrome o Edge** en la computadora de la impresora, se abre directamente el diálogo de
-  impresión (o se imprime solo, con la opción automática y la impresora predeterminada). En otros
+- **Con ticketera térmica** (Gestión → Impresora, ver sección 3.1): el servidor imprime directo en
+  la ticketera en ESC/POS, sin diálogos y cortando el papel. Cada comanda sale sola al enviarse a
+  cocina; la precuenta y el comprobante salen al pedirlos en caja.
+- **Sin ticketera:** se generan PDF de 80 mm. Con **Chrome o Edge** se abre directamente el diálogo de
+  impresión (o se imprime solo, con la opción automática y la impresora predeterminada); en otros
   navegadores el PDF se abre en una pestaña para imprimirlo.
 
 ---
@@ -129,6 +131,53 @@ Crea un servicio `systemd` llamado `comandas` (`systemctl status comandas`, `jou
    `http://IP-DE-LA-PC:3000` y use **"Agregar a pantalla de inicio"** para tenerlo como una app.
 4. Si el router tiene una **red de invitados** para clientes, no la use para los empleados:
    esas redes suelen aislar los dispositivos y no dejan llegar a la PC.
+
+### 3.1 Ticketera térmica (Bluetooth, USB o red)
+
+El servidor imprime directo en la ticketera, sin abrir diálogos. Funciona con impresoras ESC/POS
+(Xprinter, Epson y compatibles) de 80 mm o 58 mm. Se configura en **Gestión → Impresora**.
+
+**Bluetooth (por ejemplo, Xprinter con Bluetooth) en Windows 10:**
+
+1. Encienda la ticketera. En la PC servidor abra **Configuración → Dispositivos → Bluetooth y otros
+   dispositivos → Agregar Bluetooth** y elija la impresora. Si pide un PIN, suele ser `0000` o `1234`
+   (viene en el manual o en el ticket de autodiagnóstico de la impresora).
+2. En la misma pantalla abra **Más opciones de Bluetooth → Puertos COM** y anote el puerto
+   **Saliente** de la impresora (por ejemplo `COM5`).
+3. En el sistema, entre como administrador a **Gestión → Impresora**, elija
+   **"Bluetooth o USB (puerto COM)"** y escriba el puerto (o use **Buscar dispositivos** y tóquelo).
+4. Pulse **Guardar** y luego **Imprimir prueba**. El ticket de prueba muestra el logo, los acentos y
+   el ancho: los números de la línea de prueba deben ocupar todo el renglón.
+   - Si los acentos salen como símbolos raros, cambie "Acentos y ñ" a **Windows-1252**.
+   - Si la línea de números se parte en dos, elija el ancho de **42 caracteres**.
+
+**Otras conexiones:**
+
+- **Instalada en Windows:** si la ticketera ya está instalada con el controlador del fabricante
+  (USB o Bluetooth), elija "Impresora instalada en Windows" y su nombre tal como aparece en
+  *Dispositivos e impresoras*. El sistema le envía los comandos directamente (RAW).
+- **Red (IP):** elija "Impresora de red" y escriba la IP de la ticketera (puerto 9100). Reserve esa
+  IP en el router para que no cambie.
+
+**Cómo trabaja:**
+
+- Cada comanda se imprime sola al enviarse a cocina (se puede desactivar o pedir 2 o 3 copias).
+  Si un admin modifica una comanda que ya estaba en cocina, se reimprime marcada como MODIFICADA.
+- La precuenta y el comprobante de pago salen por la ticketera al pedirlos en caja (opción "Imprimir
+  también precuentas y comprobantes"). El PDF del comprobante sigue disponible en el detalle de la comanda.
+- Todo pasa por una **cola**: si la impresora está apagada, sin papel o el Bluetooth se desconectó,
+  los tickets esperan y se reintentan solos, en orden. La caja y la cocina ven un aviso y el ícono de
+  impresora de la barra superior se pone en rojo. En la pantalla **Cocina** se ve la cola, con
+  "Reintentar ahora" y "Quitar".
+
+**Si no imprime:**
+
+| Síntoma | Qué revisar |
+|---|---|
+| "No se pudo abrir el puerto" o "Access to the port is denied" | Que la impresora esté encendida y cerca, que el puerto sea el **saliente** y que ningún otro programa (por ejemplo, la utilidad del fabricante) lo tenga abierto. |
+| Funciona con `iniciar-manual.bat` pero no con el arranque automático | El arranque automático corre como cuenta del sistema. Abra el Programador de tareas, tarea **ComandasRestaurante** → Propiedades → "Cambiar usuario o grupo" y elija el usuario de Windows que emparejó la impresora (marque "Ejecutar tanto si el usuario inició sesión como si no"). |
+| Acentos raros | Cambie "Acentos y ñ" a Windows-1252 (o al revés) e imprima otra prueba. |
+| Imprime pero no corta | Desmarque "Cortar el papel" si el modelo no tiene cortador. |
 
 ---
 
@@ -200,7 +249,9 @@ comandas/
 ├── server/
 │   ├── index.js           API REST + eventos en tiempo real (SSE) + archivos estáticos
 │   ├── db.js              esquema SQLite, migraciones, datos iniciales y respaldos
-│   └── pdf.js             tickets de cocina y comprobantes en PDF (80 mm)
+│   ├── pdf.js             tickets de cocina y comprobantes en PDF (80 mm)
+│   ├── escpos.js          los mismos documentos en ESC/POS para la ticketera (logo incluido)
+│   └── impresora.js       ajustes de la ticketera, cola con reintentos y envío (COM, Windows, red)
 ├── public/                app web para celulares (HTML/CSS/JS sin frameworks)
 ├── scripts/windows/       arranque automático en Windows
 ├── scripts/linux/         servicio systemd
@@ -219,8 +270,7 @@ comandas/
 ### Limitaciones de este MVP (siguientes pasos posibles)
 
 - Usa HTTP sin cifrar: está pensado solo para la red interna del restaurante.
-- La impresión pasa por el navegador (PDF). La impresión directa a una impresora térmica de red,
-  sin diálogo, queda para cuando se tenga la impresora.
+- Sin ticketera configurada, la impresión pasa por el navegador (PDF).
 - El comprobante es interno: no emite boletas ni facturas electrónicas.
 - El sonido de aviso necesita que el celular tenga la página abierta y la pantalla encendida
   (los navegadores no permiten notificaciones push sin HTTPS).

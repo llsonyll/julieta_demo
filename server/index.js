@@ -7,6 +7,8 @@ const express = require('express');
 const { db, tx, hoy, ahora, hashPassword, verificarPassword, esPin, sembrar, respaldar } = require('./db');
 const { generarPDF, ticketCocina, comprobante } = require('./pdf');
 const { leerCarta, cargarCarta } = require('./carta-inicial');
+const { documentoESCPOS, documentoPrueba } = require('./escpos');
+const impresora = require('./impresora');
 
 const CONFIG = Object.assign(
   {
@@ -913,6 +915,7 @@ app.post(
       return nuevoId;
     });
     notificarComanda(id, 'creada');
+    ticketsAutomaticos(id);
     return obtenerComanda(id, true);
   })
 );
@@ -937,6 +940,7 @@ app.put(
       if (req.body.enviar && c.estado === 'generado') registrarEstado(c.id, 'enviado_cocina', req.user.id);
     });
     notificarComanda(c.id, 'editada');
+    ticketsAutomaticos(c.id);
     return obtenerComanda(c.id, true);
   })
 );
@@ -953,6 +957,8 @@ app.post(
     if (nuevo === 'cancelado' && c.pagada) fail(400, 'Anule primero el cobro');
     tx(() => registrarEstado(c.id, nuevo, req.user.id));
     notificarComanda(c.id, 'estado');
+    if (nuevo === 'cancelado') impresora.descartarPendientes('comanda', c.id);
+    ticketsAutomaticos(c.id);
     return obtenerComanda(c.id, true);
   })
 );
@@ -963,6 +969,7 @@ app.delete(
   ruta((req) => {
     const c = comandaVisible(req);
     db.prepare('DELETE FROM comandas WHERE id = ?').run(c.id);
+    impresora.descartarPendientes('comanda', c.id);
     notificarComanda(c.id, 'eliminada');
     return { ok: true };
   })
@@ -996,6 +1003,150 @@ app.post(
     const upd = db.prepare('UPDATE comandas SET ticket_impreso = 1, ticket_modificado = 0 WHERE id = ?');
     tx(() => ids.forEach((id) => upd.run(id)));
     emitir('comandas', { accion: 'impreso', ids });
+    return { ok: true };
+  })
+);
+
+// ---------------- ticketera térmica (ESC/POS) ----------------
+// Al imprimirse un ticket de cocina, la comanda deja de estar "pendiente de impresión"
+impresora.configurar({
+  emitir,
+  alImprimir: (t) => {
+    if (t.tipo !== 'comanda' || !t.ref) return;
+    db.prepare('UPDATE comandas SET ticket_impreso = 1, ticket_modificado = 0 WHERE id = ?').run(t.ref);
+    emitir('comandas', { accion: 'impreso', ids: [t.ref] });
+  },
+});
+
+function opcionesTicketera() {
+  const a = impresora.ajustes();
+  return { columnas: a.columnas, pagina: a.pagina, cortar: a.cortar, logo: a.logo, nombre: CONFIG.nombreRestaurante };
+}
+const lugarCorto = (c) => (c.tipo === 'local' ? `Mesa ${c.mesa_numero ?? '?'}` : `Llevar${c.cliente ? ` ${c.cliente}` : ''}`);
+
+/** Manda a la ticketera el ticket de cocina de cada comanda (reemplaza el que estuviera en cola) */
+function imprimirTicketsCocina(comandas) {
+  const a = impresora.ajustes();
+  for (const c of comandas) {
+    impresora.descartarPendientes('comanda', c.id);
+    const datos = documentoESCPOS([ticketCocina(c, momento())], opcionesTicketera());
+    impresora.encolar('comanda', c.id, `Comanda #${c.numero_dia} · ${lugarCorto(c)}${c.ticket_modificado ? ' (modificada)' : ''}`, datos, a.copiasComanda);
+  }
+}
+
+/** Impresión automática al enviar a cocina (o al modificar una comanda que ya estaba en cocina) */
+function ticketsAutomaticos(id) {
+  const a = impresora.ajustes();
+  if (a.modo === 'ninguna' || !a.autoComandas) return;
+  const c = obtenerComanda(id);
+  if (c && EN_COCINA.includes(c.estado) && !c.ticket_impreso) imprimirTicketsCocina([c]);
+}
+
+const exigirTicketera = () => {
+  if (!impresora.activa()) fail(400, 'No hay ticketera configurada (Gestión → Impresora)');
+};
+
+app.get('/api/impresora/estado', ruta(() => impresora.resumen()));
+
+app.get(
+  '/api/impresora',
+  rol('admin', 'caja'),
+  ruta(() => ({ ajustes: impresora.ajustes(), estado: impresora.resumen(), cola: impresora.cola(), windows: process.platform === 'win32' }))
+);
+
+app.put(
+  '/api/impresora',
+  rol('admin'),
+  ruta((req) => {
+    try {
+      return impresora.guardarAjustes(req.body || {});
+    } catch (e) {
+      fail(400, e.message);
+    }
+  })
+);
+
+app.get(
+  '/api/impresora/dispositivos',
+  rol('admin'),
+  ruta(async () => {
+    try {
+      return await impresora.dispositivos();
+    } catch (e) {
+      fail(500, `No se pudieron buscar dispositivos: ${e.message}`);
+    }
+  })
+);
+
+app.post(
+  '/api/impresora/prueba',
+  rol('admin', 'caja'),
+  ruta(() => {
+    exigirTicketera();
+    impresora.encolar('prueba', null, 'Ticket de prueba', documentoPrueba(opcionesTicketera(), CONFIG.nombreRestaurante, momento()));
+    return { ok: true };
+  })
+);
+
+app.post(
+  '/api/impresora/reintentar',
+  rol('admin', 'caja', 'cocina'),
+  ruta((req) => {
+    impresora.reintentar(req.body?.id ? Number(req.body.id) : null);
+    return impresora.resumen();
+  })
+);
+
+app.post(
+  '/api/impresora/cancelar',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    impresora.cancelar(Number(req.body?.id));
+    return impresora.resumen();
+  })
+);
+
+// Imprimir (o reimprimir) tickets de cocina en la ticketera. { ids: [comandas] }
+app.post(
+  '/api/imprimir/comanda',
+  rol('admin', 'caja', 'cocina', 'mozo'),
+  ruta((req) => {
+    exigirTicketera();
+    const comandas = obtenerComandas(listaIds(req.body?.ids)).filter((c) => c.estado !== 'generado' && c.estado !== 'cancelado');
+    if (!comandas.length) fail(404, 'No hay tickets para imprimir');
+    imprimirTicketsCocina(comandas);
+    return { ok: true, enCola: comandas.length };
+  })
+);
+
+// Precuenta en la ticketera. { ids: [comandas] }
+app.post(
+  '/api/imprimir/precuenta',
+  rol('admin', 'mozo', 'caja'),
+  ruta((req) => {
+    exigirTicketera();
+    const comandas = obtenerComandas(listaIds(req.body?.ids)).filter((c) => c.estado !== 'cancelado' && !c.pagada);
+    if (!comandas.length) fail(404, 'No hay consumo pendiente para la precuenta');
+    const datos = documentoESCPOS([comprobante({ comandas, config: CONFIG, ahora: ahora() })], opcionesTicketera());
+    impresora.encolar('precuenta', comandas[0].id, `Precuenta · ${lugarCorto(comandas[0])}`, datos);
+    return { ok: true };
+  })
+);
+
+// Comprobante de un cobro en la ticketera. { cobro_id }
+app.post(
+  '/api/imprimir/comprobante',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    exigirTicketera();
+    const id = Number(req.body?.cobro_id);
+    const cobro = db.prepare('SELECT * FROM cobros WHERE id = ?').get(id);
+    if (!cobro) fail(404, 'Cobro no encontrado');
+    if (cobro.anulado) fail(400, 'Este cobro fue anulado');
+    const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
+    const cajero = db.prepare('SELECT nombre FROM usuarios WHERE id = ?').get(cobro.usuario_id)?.nombre;
+    const datos = documentoESCPOS([comprobante({ cobro, comandas: obtenerComandas(ids), config: CONFIG, cajero })], opcionesTicketera());
+    impresora.encolar('comprobante', id, `Comprobante N° ${String(id).padStart(6, '0')}`, datos);
     return { ok: true };
   })
 );
