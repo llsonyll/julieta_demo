@@ -1,6 +1,5 @@
 // Servidor de comandas - red local
 const path = require('node:path');
-const fs = require('node:fs');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const express = require('express');
@@ -8,21 +7,17 @@ const { db, tx, hoy, ahora, hashPassword, verificarPassword, esPin, sembrar, res
 const { generarPDF, ticketCocina, comprobante } = require('./pdf');
 const { leerCarta, cargarCarta } = require('./carta-inicial');
 
-const CONFIG = Object.assign(
-  {
-    puerto: 3000,
-    nombreRestaurante: 'Mi Restaurante',
-    moneda: 'S/',
-    diasRespaldo: 30,
-    ruc: '',
-    direccion: '',
-    telefono: '',
-    tasaIGV: 0, // % total (IGV + IPM) para mostrar el valor sin IGV en el detalle para SUNAT; 0 = no se muestra
-    pieComprobante: '¡Gracias por su preferencia!',
-    avisoComprobante: 'Comprobante interno. No reemplaza a la boleta o factura electrónica.',
-  },
-  JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'))
-);
+const { cargarConfig, ErrorConfig } = require('./config');
+
+let CONFIG;
+try {
+  CONFIG = cargarConfig(); // por defecto -> config.json -> config.local.json
+} catch (e) {
+  if (!(e instanceof ErrorConfig)) throw e;
+  console.error(`[${new Date().toLocaleString('es-PE')}] ERROR de configuración: ${e.message}`);
+  console.error('El servidor no puede iniciar hasta que se corrija el archivo.');
+  process.exit(1);
+}
 const PUERTO = Number(process.env.PORT || CONFIG.puerto);
 
 const ROLES = ['admin', 'mozo', 'caja', 'cocina'];

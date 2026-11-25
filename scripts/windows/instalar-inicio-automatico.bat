@@ -30,7 +30,17 @@ if errorlevel 1 (
   exit /b 1
 )
 
-for /f "delims=" %%p in ('node -p "require('./config.json').puerto || 3000"') do set PUERTO=%%p
+REM Puerto final: config.json combinado con config.local.json (si existe)
+set "PUERTO="
+for /f "delims=" %%p in ('node server\config.js puerto') do set "PUERTO=%%p"
+if not defined PUERTO (
+  echo.
+  echo  ERROR: no se pudo leer la configuracion. Corrija config.json / config.local.json
+  echo  segun el mensaje de arriba y vuelva a ejecutar este archivo.
+  echo.
+  pause
+  exit /b 1
+)
 
 echo [2/5] Creando tarea programada al inicio de Windows...
 schtasks /Create /F /TN "ComandasRestaurante" /SC ONSTART /RU SYSTEM /RL HIGHEST /DELAY 0000:20 /TR "\"%~dp0iniciar-servidor.bat\""

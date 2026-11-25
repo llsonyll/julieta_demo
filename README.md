@@ -65,7 +65,7 @@ hasta que se entreguen; su ticket vuelve a quedar pendiente de impresión).
 
 - **Ticket de cocina:** sin precios y con letra grande; muestra mesa, mozo, platos, cambios de
   guarnición resaltados ("CAMBIO: Yuca frita (en vez de Arroz)", "SIN ARROZ") y notas.
-- **Comprobante:** logo del local (`server/logo-comprobante.png`, en negro para impresora térmica), datos del local (de `config.json`), detalle, total, forma de pago, recibido y vuelto.
+- **Comprobante:** logo del local (`server/logo-comprobante.png`, en negro para impresora térmica), datos del local (de `config.local.json` o `config.json`), detalle, total, forma de pago, recibido y vuelto.
   Es un **comprobante interno**: no reemplaza a la boleta o factura electrónica.
 - Ambos son PDF de 80 mm de ancho: sirven en una impresora térmica de tickets o en una impresora común.
 - Con **Chrome o Edge** en la computadora de la impresora, se abre directamente el diálogo de
@@ -79,24 +79,32 @@ hasta que se entreguen; su ticket vuelve a quedar pendiente de impresión).
 1. Instale **Node.js 22 LTS o más reciente** (versión mínima 22.13) desde <https://nodejs.org>
    (opciones por defecto).
 2. Copie la carpeta `comandas` a un lugar fijo, por ejemplo `C:\comandas`.
-3. Edite `config.json` con los datos del local (aparecen en el comprobante):
+3. Ponga los datos del local (aparecen en el comprobante) en un archivo nuevo **`config.local.json`**,
+   junto a `config.json`. **No edite `config.json`**: trae los valores por defecto y se reemplaza en
+   cada actualización; `config.local.json` es del local, no se sube a git y no bloquea `git pull`.
+   Escriba solo las claves que quiere cambiar, por ejemplo:
    ```json
    {
-     "puerto": 3000,
      "nombreRestaurante": "Picantería Julieta",
-     "moneda": "S/",
-     "diasRespaldo": 30,
-     "tasaIGV": 0,
-     "ruc": "",
-     "direccion": "",
-     "telefono": "",
-     "pieComprobante": "¡Gracias por su preferencia!",
-     "avisoComprobante": "Comprobante interno. No reemplaza a la boleta o factura electrónica."
+     "ruc": "20123456789",
+     "direccion": "Av. Principal 123, Arequipa",
+     "telefono": "054 123456",
+     "tasaIGV": 18
    }
    ```
+   Claves disponibles (con su valor en `config.json`): `puerto` (3000), `nombreRestaurante`,
+   `moneda` ("S/"), `diasRespaldo` (30), `tasaIGV` (0), `ruc`, `direccion`, `telefono`,
+   `pieComprobante` y `avisoComprobante`. Los valores de `config.local.json` reemplazan a los de
+   `config.json`.
+
    `tasaIGV` (opcional): porcentaje total de IGV + IPM del local, por ejemplo `18` en el régimen
    general o la tasa reducida vigente si es restaurante MYPE (confírmela con su contador). Si se llena,
    el detalle para boleta SUNAT muestra también el valor unitario sin IGV. Con `0` no se muestra.
+
+   Si edita el archivo con el Bloc de notas, cualquier codificación UTF-8 sirve (con o sin BOM).
+   Si el JSON tiene un error (una coma o comilla de más o de menos), el servidor no arranca y lo
+   explica en `logs\servidor.log` (por ejemplo `config.local.json tiene un error de formato: ...`).
+   Puede revisarlo con `node server\config.js`, que muestra la configuración final o el error.
 4. Abra `scripts\windows\`, haga **clic derecho en `instalar-inicio-automatico.bat` →
    "Ejecutar como administrador"**. El script:
    - instala las dependencias,
@@ -196,9 +204,11 @@ Los caldos y los platos con acompañamiento propio (cuy, merienda, panceta, chic
 
 ```
 comandas/
-├── config.json            configuración (nombre, moneda, puerto)
+├── config.json            configuración por defecto (nombre, moneda, puerto)
+├── config.local.json      datos propios del local; reemplaza a config.json (opcional, fuera de git)
 ├── server/
 │   ├── index.js           API REST + eventos en tiempo real (SSE) + archivos estáticos
+│   ├── config.js          lee config.json + config.local.json
 │   ├── db.js              esquema SQLite, migraciones, datos iniciales y respaldos
 │   └── pdf.js             tickets de cocina y comprobantes en PDF (80 mm)
 ├── public/                app web para celulares (HTML/CSS/JS sin frameworks)

@@ -9,6 +9,8 @@ NODE="$(command -v node || true)"
 [ -z "$NODE" ] && { echo "Node.js no está instalado (se requiere v22.13 o superior)"; exit 1; }
 
 cd "$DIR"
+# Puerto final: config.json combinado con config.local.json (si existe). Falla si el JSON está mal.
+PUERTO="$("$NODE" "$DIR/server/config.js" puerto)"
 sudo -u "$USUARIO" npm install --omit=dev
 
 cat > /etc/systemd/system/comandas.service <<UNIT
@@ -32,7 +34,6 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now comandas.service
-PUERTO="$(node -p "require('$DIR/config.json').puerto || 3000")"
 if command -v ufw >/dev/null && ufw status | grep -q active; then ufw allow "$PUERTO"/tcp; fi
 echo
 echo "Listo. Estado: systemctl status comandas   |   Registro: journalctl -u comandas -f"
