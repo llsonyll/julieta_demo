@@ -214,6 +214,7 @@ function abrirModal(html) {
   const m = $('#modal');
   m.innerHTML = `<div class="caja">${html}</div>`;
   m.classList.remove('oculto');
+  m.ondragover = m.ondragleave = m.ondrop = null; // la ventana de cobro los usa para soltar el XML
   m.onclick = (e) => {
     if (e.target === m) cerrarModal();
   };
@@ -656,6 +657,8 @@ function abrirCobro(comandas, titulo) {
   const total = comandas.reduce((s, c) => s + c.total, 0);
   const metodos = S.config.metodosPago || ['Efectivo'];
   let metodo = metodos[0];
+  let tipoComprobante = 'nota';
+  let xml = null; // { base64, vista } del comprobante emitido en SOL
   const m = abrirModal(`
     <div class="pila">
       <div class="fila entre"><h3>${esc(titulo)}</h3><button class="btn chico" data-x>✕</button></div>
@@ -666,10 +669,18 @@ function abrirCobro(comandas, titulo) {
           <button type="button" data-comp="nota" class="activo">🧾 Nota de venta</button>
           <button type="button" data-comp="sunat">🏛️ Boleta o factura (SUNAT)</button>
         </div></div>
-      <div id="aviso-sunat" class="aviso-suave oculto">Se cobra sin imprimir. Emita la boleta o factura en SOL con estos datos,
-        descargue el XML y súbalo en <b>Comprobantes SUNAT</b>: se imprimirá desde ahí.</div>
-      <button type="button" class="btn bloque" id="ver-sunat">📋 Detalle para boleta SUNAT</button>
-      <div id="sunat" class="pila oculto">${detalleSunat(comandas, total)}</div>
+      <div id="bloque-sunat" class="pila oculto">
+        <div class="aviso-suave">1) Emita la boleta o factura en SOL con estos datos. 2) Arrastre aquí el ZIP que descarga
+          (o toque el recuadro para elegirlo). 3) Cobre: se imprime al momento.</div>
+        <button type="button" class="btn bloque" id="ver-sunat">📋 Detalle para SOL</button>
+        <div id="sunat" class="pila">${detalleSunat(comandas, total)}</div>
+        <label class="tarjeta zona-xml" id="zona-cobro">
+          <input type="file" accept=".xml,.zip,text/xml,application/xml,application/zip" id="xml-cobro" hidden>
+          <b>⬆️ Arrastre aquí el ZIP o XML de SUNAT</b>
+          <span class="suave peq">o toque para elegirlo</span>
+        </label>
+        <div id="vista-xml" class="oculto"></div>
+      </div>
       <div><div class="etiqueta-campo">Forma de pago</div>
         <div class="opciones">${metodos.map((x) => `<button type="button" class="chip ${x === metodo ? 'activo' : ''}" data-metodo="${esc(x)}">${esc(x)}</button>`).join('')}</div></div>
       <label class="campo" id="campo-recibido"><span>Recibido (opcional, para calcular el vuelto)</span>
@@ -680,25 +691,91 @@ function abrirCobro(comandas, titulo) {
     </div>`);
   $('[data-x]', m).onclick = cerrarModal;
   $('#ver-sunat', m).onclick = () => $('#sunat', m).classList.toggle('oculto');
-  let tipoComprobante = 'nota';
-  $$('[data-comp]', m).forEach(
-    (b) =>
-      (b.onclick = () => {
-        tipoComprobante = b.dataset.comp;
-        $$('[data-comp]', m).forEach((x) => x.classList.toggle('activo', x === b));
-        const sunat = tipoComprobante === 'sunat';
-        $('#aviso-sunat', m).classList.toggle('oculto', !sunat);
-        $('#sunat', m).classList.toggle('oculto', !sunat);
-        $('#cobrar', m).textContent = sunat ? '💵 Cobrar (comprobante en SOL)' : '💵 Cobrar e imprimir nota de venta';
-      })
-  );
   $$('[data-copiar]', m).forEach((b) => (b.onclick = () => copiar(b.dataset.copiar)));
+
+  const nombreXML = (v) => `${v.tipo === '01' ? 'Factura' : 'Boleta'} ${v.numero}`;
+  function actualizarBoton() {
+    const b = $('#cobrar', m);
+    b.classList.toggle('peligro', !!(xml && xml.vista.coincide === false));
+    b.textContent =
+      tipoComprobante === 'nota'
+        ? '💵 Cobrar e imprimir nota de venta'
+        : !xml
+        ? '💵 Cobrar sin comprobante (subir el XML después)'
+        : xml.vista.coincide === false
+        ? `⚠️ Cobrar igual e imprimir ${nombreXML(xml.vista)}`
+        : `💵 Cobrar e imprimir ${nombreXML(xml.vista)}`;
+  }
+  function elegirComprobante(tipo) {
+    tipoComprobante = tipo;
+    $$('[data-comp]', m).forEach((x) => x.classList.toggle('activo', x.dataset.comp === tipo));
+    $('#bloque-sunat', m).classList.toggle('oculto', tipo !== 'sunat');
+    actualizarBoton();
+  }
+  $$('[data-comp]', m).forEach((b) => (b.onclick = () => elegirComprobante(b.dataset.comp)));
+
+  function mostrarXML() {
+    const caja = $('#vista-xml', m);
+    $('#zona-cobro', m).classList.toggle('oculto', !!xml);
+    caja.classList.toggle('oculto', !xml);
+    if (!xml) return (caja.innerHTML = '');
+    const v = xml.vista;
+    const cliente = [v.cliente.doc ? `${v.cliente.tipoDocTexto || 'Doc.'} ${v.cliente.doc}` : '', v.cliente.nombre].filter(Boolean).join(' · ');
+    caja.innerHTML = `<div class="tarjeta vista-xml ${v.coincide === false ? 'falla' : ''}">
+        <div class="fila entre"><b>🏛️ ${esc(nombreXML(v))}</b><button type="button" class="btn chico" id="quitar-xml">Cambiar</button></div>
+        <div class="suave peq">${esc(cliente || 'Cliente sin documento')} · ${v.items} producto(s)</div>
+        <div>${v.coincide === false ? `⚠️ <b class="error-txt">Total ${dinero(v.total)}: no coincide con el cobro (${dinero(total)})</b>` : `✅ Total ${dinero(v.total)}, coincide con el cobro`}</div>
+        ${v.avisos.map((a) => `<div class="peq error-txt">⚠️ ${esc(a)}</div>`).join('')}
+      </div>`;
+    $('#quitar-xml', m).onclick = () => {
+      xml = null;
+      mostrarXML();
+      actualizarBoton();
+    };
+  }
+
+  async function cargarXML(archivo) {
+    if (!archivo) return;
+    elegirComprobante('sunat');
+    const err = $('[data-err]', m);
+    err.textContent = '';
+    if (archivo.size > 700 * 1024) return (err.textContent = 'El archivo es demasiado grande para ser un XML de SUNAT');
+    try {
+      const base64 = await leerArchivo(archivo);
+      xml = { base64, vista: await api('POST', '/api/sunat/leer', { contenido: base64, total }) };
+      $('#sunat', m).classList.add('oculto'); // ya se emitió: el detalle ya no hace falta
+    } catch (e) {
+      xml = null;
+      err.textContent = e.message;
+    }
+    mostrarXML();
+    actualizarBoton();
+  }
+  const input = $('#xml-cobro', m);
+  input.onchange = () => {
+    cargarXML(input.files[0]);
+    input.value = '';
+  };
+  // se puede soltar el archivo en cualquier parte de la ventana de cobro
+  const zona = $('#zona-cobro', m);
+  m.ondragover = (e) => {
+    e.preventDefault();
+    zona.classList.add('encima');
+  };
+  m.ondragleave = (e) => {
+    if (e.target === m) zona.classList.remove('encima');
+  };
+  m.ondrop = (e) => {
+    e.preventDefault();
+    zona.classList.remove('encima');
+    cargarXML(e.dataTransfer?.files?.[0]);
+  };
+
   const recibido = $('#recibido', m);
-  const vuelto = () => {
+  recibido.oninput = () => {
     const r = Number(recibido.value);
     $('#vuelto', m).textContent = recibido.value && r >= total ? `Vuelto: ${dinero(r - total)}` : '';
   };
-  recibido.oninput = vuelto;
   $$('[data-metodo]', m).forEach(
     (b) =>
       (b.onclick = () => {
@@ -708,24 +785,32 @@ function abrirCobro(comandas, titulo) {
         $('#vuelto', m).classList.toggle('oculto', metodo !== 'Efectivo');
       })
   );
+
   $('#cobrar', m).onclick = async (e) => {
+    const sunat = tipoComprobante === 'sunat';
+    if (sunat && xml?.vista.coincide === false && !(await confirmarEnCobro())) return;
     e.target.disabled = true;
-    const ventana = usaTicketeraCaja() || tipoComprobante === 'sunat' ? null : prepararVentana();
+    const imprime = !sunat || xml; // sin XML no se imprime nada todavía
+    const ventana = imprime && !usaTicketeraCaja() ? prepararVentana() : null;
     try {
       const cobro = await api('POST', '/api/cobros', {
         comanda_ids: comandas.map((c) => c.id),
         comprobante: tipoComprobante,
         metodo,
         recibido: metodo === 'Efectivo' && recibido.value !== '' ? Number(recibido.value) : null,
+        ...(sunat && xml ? { sunat_xml: xml.base64, aceptar_diferencia: xml.vista.coincide === false } : {}),
       });
       cerrarModal();
-      if (tipoComprobante === 'sunat') {
-        toast(`Cobro registrado (${metodo}). Emita el comprobante en SOL y suba el XML en Comprobantes SUNAT.`, 'ok', 6000);
-        return recargarVista();
+      if (sunat && xml) {
+        toast(`Cobro registrado (${metodo}) con ${nombreXML(xml.vista)}`, 'ok');
+        imprimirSunat(cobro.sunat_id, ventana);
+      } else if (sunat) {
+        toast(`Cobro registrado (${metodo}). Suba el XML en Comprobantes SUNAT cuando lo tenga.`, 'ok', 6000);
+      } else {
+        toast(`Cobro registrado (${metodo})`, 'ok');
+        if (usaTicketeraCaja()) aTicketera('/api/imprimir/comprobante', { cobro_id: cobro.id }, 'Nota de venta enviada a la ticketera');
+        else imprimirPDF(`/api/cobros/${cobro.id}/comprobante.pdf`, ventana);
       }
-      toast(`Cobro registrado (${metodo})`, 'ok');
-      if (usaTicketeraCaja()) aTicketera('/api/imprimir/comprobante', { cobro_id: cobro.id }, 'Comprobante enviado a la ticketera');
-      else imprimirPDF(`/api/cobros/${cobro.id}/comprobante.pdf`, ventana);
       recargarVista();
     } catch (err) {
       ventana?.close();
@@ -733,6 +818,19 @@ function abrirCobro(comandas, titulo) {
       e.target.disabled = false;
     }
   };
+
+  // confirmación dentro de la misma ventana (abrir otro modal cerraría la de cobro)
+  function confirmarEnCobro() {
+    return new Promise((resolve) => {
+      const err = $('[data-err]', m);
+      err.innerHTML = `El total de la ${xml.vista.tipo === '01' ? 'factura' : 'boleta'} ${esc(xml.vista.numero)} no coincide con el cobro.
+        <button type="button" class="btn chico peligro" id="si-cobrar">Cobrar igual</button>`;
+      $('#si-cobrar', m).onclick = () => {
+        err.textContent = '';
+        resolve(true);
+      };
+    });
+  }
 }
 
 // ---------------- acciones (delegación de clicks) ----------------
@@ -853,6 +951,9 @@ const ACCIONES = {
   },
   volver: () => (history.length > 1 ? history.back() : ir('#/comandas')),
 };
+
+// soltar un archivo fuera de una zona de carga no debe abrirlo en el navegador
+for (const ev of ['dragover', 'drop']) document.addEventListener(ev, (e) => e.dataTransfer?.types?.includes('Files') && e.preventDefault());
 
 document.addEventListener('click', (e) => {
   desbloquearAudio();
@@ -1524,9 +1625,9 @@ function enlazarPanelTicketera(cont) {
 // ---------- Comprobantes SUNAT ----------
 // Flujo: se cobra como "boleta o factura", se emite en SOL, se descarga el XML y se sube aquí:
 // el sistema lo vincula con su cobro y lo imprime.
-function imprimirSunat(id) {
+function imprimirSunat(id, ventana) {
   if (usaTicketeraCaja()) return aTicketera('/api/imprimir/sunat', { id }, 'Comprobante enviado a la ticketera');
-  imprimirPDF(`/api/sunat/${id}/comprobante.pdf`);
+  imprimirPDF(`/api/sunat/${id}/comprobante.pdf`, ventana);
 }
 
 /** Después de subir un XML sin gesto del usuario: con ticketera o Chrome se imprime solo; si no, se ofrece abrir el PDF */

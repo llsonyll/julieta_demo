@@ -45,7 +45,7 @@ Para desarrollo (se reinicia al guardar cambios): `npm run dev`.
 | **Etapas** | Generado → **En cocina** (se genera el ticket) → **Entregado** (lo marca el mozo), y Cancelado. Cada cambio queda en el historial con hora y usuario. | Mozo, Caja, Admin |
 | **Tickets de cocina** | Pantalla "Tickets" para la PC que tiene la impresora: avisa con sonido cada ticket nuevo y permite imprimirlo (uno o todos los pendientes). En Chrome/Edge se puede activar la **impresión automática**. Si un admin modifica una comanda ya enviada, el ticket se reimprime marcado como MODIFICADA. | Caja, Admin |
 | **Cobro y comprobante** | Cobrar una comanda o **la mesa completa**, eligiendo la forma de pago (efectivo con cálculo de vuelto, Yape, Plin, tarjeta, transferencia, otro). Se genera el **comprobante en PDF**. El botón **"Detalle para boleta SUNAT"** muestra los platos agrupados (cantidad, descripción, precio e importe) para copiarlos con un toque en SEE-SOL. Un cobro se puede anular. Cobrar libera la mesa. | Caja, Admin |
-| **Comprobantes SUNAT** | Al cobrar se elige **nota de venta** (se imprime al instante) o **boleta/factura SUNAT**. En el segundo caso se emite en SOL con los datos del cobro, se descarga el XML y se sube en *Comprobantes SUNAT*: el sistema lo vincula con su cobro y lo imprime (ticketera o PDF) con QR. Ver sección 3.2. | Caja, Admin |
+| **Comprobantes SUNAT** | Al cobrar se elige **nota de venta** (se imprime al instante) o **boleta/factura SUNAT**: se emite en SOL con los datos del cobro, se **arrastra el ZIP a la ventana de cobro** y un solo botón cobra e imprime el comprobante (ticketera o PDF) con QR. Ver sección 3.2. | Caja, Admin |
 | **Reporte del día** | Comandas, mesas atendidas, empleados en turno, total vendido y cobrado, **cobros por forma de pago**, ventas por empleado y por mesa, platos más vendidos, **guarniciones servidas** y tiempo promedio de cocina a entrega. Se puede elegir otra fecha e imprimir. | Admin, Caja |
 | **Turnos** | El turno se abre automáticamente al ingresar. El empleado lo cierra con "Finalizar turno y salir". | Todos |
 
@@ -185,16 +185,18 @@ El servidor imprime directo en la ticketera, sin abrir diálogos. Funciona con i
 Las boletas y facturas se emiten en el portal **SOL de SUNAT** (SEE-SOL). El sistema facilita los datos
 para emitirlas y luego imprime el comprobante a partir del XML que entrega SUNAT.
 
-1. **Cobrar:** en la ventana de cobro elija **"Boleta o factura (SUNAT)"**. Se cobra sin imprimir y se
-   muestra el detalle (cantidad, descripción, precio, importe) para copiarlo en SOL con un toque.
-2. **Emitir en SOL** la boleta o factura y **descargar su XML** (o el ZIP que lo contiene).
-3. **Subir el XML** en la pantalla **Comprobantes SUNAT** (tocando el recuadro o arrastrando el archivo).
-   El sistema lee el comprobante y lo **vincula solo** con el cobro pendiente del mismo día y el mismo total.
-   Si hay varios cobros con ese total, pregunta a cuál corresponde. Luego **lo imprime**: en la ticketera
-   asignada a comprobantes o, sin ticketera, en PDF.
-4. En *Comprobantes SUNAT* quedan los **pendientes** (cobros esperando su XML, con sus datos para SOL)
-   y los **emitidos** del día, con Imprimir, PDF y el XML original. El detalle de cada comanda muestra
-   su boleta o factura.
+1. En la **ventana de cobro** elija **"Boleta o factura (SUNAT)"**. Aparece el detalle (cantidad,
+   descripción, precio, importe) para copiarlo en SOL con un toque.
+2. **Emita en SOL** la boleta o factura y **descargue el ZIP** (o el XML).
+3. **Arrastre el ZIP a la ventana de cobro** (o toque el recuadro para elegirlo). El sistema lo lee y
+   muestra el número, el cliente y si el **total coincide** con el cobro. Soltar el archivo en la
+   ventana la pasa sola a "Boleta o factura".
+4. Pulse **"Cobrar e imprimir Boleta …"**: registra el cobro, guarda el XML vinculado a él y lo
+   **imprime** (en la ticketera asignada a comprobantes o, sin ticketera, en PDF).
+   - Si el total no coincide, el botón lo advierte y pide confirmar antes de cobrar.
+   - Una boleta o factura ya registrada en otro cobro se rechaza.
+   - También se puede cobrar sin el archivo: el cobro queda **pendiente** y el XML se sube luego en
+     la pantalla **Comprobantes SUNAT**, que además guarda el historial (reimprimir, PDF y XML original).
 
 Lo impreso incluye los datos del XML: emisor (razón social, RUC, dirección), tipo y serie-número,
 fecha, cliente (DNI o RUC), detalle, operación gravada, IGV, importe total, monto en letras, el valor
