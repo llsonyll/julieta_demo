@@ -1,16 +1,17 @@
-// Ticketera térmica: ajustes, cola de impresión con reintentos y envío a la impresora.
+// Impresoras térmicas: varias impresoras, qué imprime cada una, colas con reintentos y envío.
 //
-// Formas de conexión (ajuste "modo"):
+// Cada impresora tiene su conexión (ajuste "modo"):
 //   com      Bluetooth o USB que Windows expone como puerto COM (ej: COM5). Se escribe directo.
 //   windows  Impresora instalada en Windows con su controlador (USB, Bluetooth o red). Se envía en RAW.
 //   red      Impresora con IP propia (puerto 9100).
 //   archivo  Solo para pruebas: guarda cada ticket en data/impresiones/*.bin
-//   ninguna  Sin ticketera: todo se imprime en PDF desde el navegador, como antes.
 //
-// Cada trabajo se guarda en la tabla cola_impresion antes de enviarse. Si la impresora no
-// responde (Bluetooth dormido, apagada, sin papel), se reintenta solo y en orden.
+// Las asignaciones dicen a qué impresora va cada documento (comandas, precuentas, comprobantes).
+// Sin impresora asignada, ese documento se imprime en PDF desde el navegador, como antes.
+//
+// Cada trabajo se guarda en la tabla cola_impresion antes de enviarse. Cada impresora tiene su
+// propia cola: si una no responde, sus tickets esperan y se reintentan solos, y las demás siguen.
 const fs = require('node:fs');
-const os = require('node:os');
 const net = require('node:net');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -18,6 +19,8 @@ const { db, ahora } = require('./db');
 
 const DIR = path.join(__dirname, '..', 'data', 'impresora');
 const DIR_ARCHIVOS = path.join(__dirname, '..', 'data', 'impresiones');
+const MAX_IMPRESORAS = 4;
+const DOCUMENTOS = ['comanda', 'precuenta', 'comprobante'];
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS ajustes (
@@ -38,200 +41,317 @@ CREATE TABLE IF NOT EXISTS cola_impresion (
 );
 CREATE INDEX IF NOT EXISTS idx_cola_estado ON cola_impresion(estado);
 `);
+if (!db.prepare('PRAGMA table_info(cola_impresion)').all().some((c) => c.name === 'impresora_id'))
+  db.exec('ALTER TABLE cola_impresion ADD COLUMN impresora_id INTEGER');
 // lo ya impreso o cancelado hace más de 7 días se borra
 db.prepare("DELETE FROM cola_impresion WHERE estado IN ('impreso','cancelado') AND creado_en < datetime('now','localtime','-7 days')").run();
 
-// ---------------- ajustes ----------------
-const POR_DEFECTO = {
-  modo: 'ninguna',
+// ---------------- ajustes guardados ----------------
+function leer(clave) {
+  const fila = db.prepare('SELECT valor FROM ajustes WHERE clave = ?').get(clave);
+  try {
+    return fila ? JSON.parse(fila.valor) : null;
+  } catch {
+    return null;
+  }
+}
+function escribir(clave, valor) {
+  db.prepare('INSERT INTO ajustes (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor').run(clave, JSON.stringify(valor));
+}
+
+const IMPRESORA_BASE = {
+  nombre: 'Ticketera',
+  modo: 'com',
   puerto: '', // COM5
   baudios: 9600,
-  nombre: '', // nombre de la impresora en Windows
+  nombreWindows: '', // nombre de la impresora en Windows
   host: '', // IP en modo red
   puertoRed: 9100,
   columnas: 48, // 80 mm = 48 (algunos modelos 42); 58 mm = 32
   pagina: 'cp850', // página de códigos para los acentos: cp850 o wpc1252
   cortar: true,
   logo: true,
-  autoComandas: true, // imprimir cada comanda al enviarla a cocina
-  caja: true, // precuenta y comprobante también salen por la ticketera
-  copiasComanda: 1,
 };
-const MODOS = ['ninguna', 'com', 'windows', 'red', 'archivo'];
+const ASIGNACIONES_BASE = { comanda: null, precuenta: null, comprobante: null, autoComandas: true, copiasComanda: 1 };
+const MODOS = ['com', 'windows', 'red', 'archivo'];
 
-function ajustes() {
-  const fila = db.prepare("SELECT valor FROM ajustes WHERE clave = 'impresora'").get();
-  let guardado = {};
-  try {
-    guardado = fila ? JSON.parse(fila.valor) : {};
-  } catch {}
-  return { ...POR_DEFECTO, ...guardado };
+// Migración: la versión anterior tenía una sola ticketera (clave 'impresora')
+if (!leer('impresoras')) {
+  const viejo = leer('impresora');
+  if (viejo && viejo.modo && viejo.modo !== 'ninguna') {
+    const { modo, puerto, baudios, nombre, host, puertoRed, columnas, pagina, cortar, logo } = viejo;
+    escribir('impresoras', [{ ...IMPRESORA_BASE, id: 1, nombre: 'Ticketera', modo, puerto, baudios, nombreWindows: nombre || '', host, puertoRed, columnas, pagina, cortar, logo }]);
+    escribir('asignaciones', {
+      ...ASIGNACIONES_BASE,
+      comanda: 1,
+      precuenta: viejo.caja !== false ? 1 : null,
+      comprobante: viejo.caja !== false ? 1 : null,
+      autoComandas: viejo.autoComandas !== false,
+      copiasComanda: viejo.copiasComanda || 1,
+    });
+    db.prepare('UPDATE cola_impresion SET impresora_id = 1 WHERE impresora_id IS NULL').run();
+  } else {
+    escribir('impresoras', []);
+    escribir('asignaciones', { ...ASIGNACIONES_BASE });
+  }
 }
 
-/** Valida y guarda los ajustes. Lanza Error con un mensaje para el usuario si algo no cuadra. */
-function guardarAjustes(b) {
-  const a = { ...ajustes() };
-  const txt = (v, max = 120) => String(v ?? '').trim().slice(0, max);
-  const si = (v) => v === true || v === 1 || v === '1' || v === 'true';
+const impresoras = () => (leer('impresoras') || []).map((i) => ({ ...IMPRESORA_BASE, ...i }));
+const impresora = (id) => impresoras().find((i) => i.id === Number(id)) || null;
+const asignaciones = () => ({ ...ASIGNACIONES_BASE, ...(leer('asignaciones') || {}) });
+/** Impresora que imprime un documento (comanda, precuenta o comprobante), o null si va en PDF */
+const destino = (doc) => impresora(asignaciones()[doc]);
+/** Opciones de papel para convertir un documento a ESC/POS en esa impresora */
+const opciones = (imp) => ({ columnas: imp.columnas, pagina: imp.pagina, cortar: imp.cortar, logo: imp.logo });
+
+const si = (v) => v === true || v === 1 || v === '1' || v === 'true';
+const txt = (v, max = 120) => String(v ?? '').trim().slice(0, max);
+
+function validarImpresora(b, actual = IMPRESORA_BASE) {
+  const a = { ...actual };
+  if (b.nombre !== undefined) a.nombre = txt(b.nombre, 30);
+  if (!a.nombre) throw new Error('Póngale un nombre a la impresora (ej: Cocina, Caja)');
   if (b.modo !== undefined) {
     if (!MODOS.includes(b.modo)) throw new Error('Forma de conexión inválida');
     a.modo = b.modo;
   }
   if (b.puerto !== undefined) a.puerto = txt(b.puerto, 20).toUpperCase();
   if (b.baudios !== undefined) a.baudios = parseInt(b.baudios, 10) || 9600;
-  if (b.nombre !== undefined) a.nombre = txt(b.nombre);
+  if (b.nombreWindows !== undefined) a.nombreWindows = txt(b.nombreWindows);
   if (b.host !== undefined) a.host = txt(b.host, 60);
   if (b.puertoRed !== undefined) a.puertoRed = parseInt(b.puertoRed, 10) || 9100;
   if (b.columnas !== undefined) a.columnas = [32, 42, 48].includes(Number(b.columnas)) ? Number(b.columnas) : 48;
   if (b.pagina !== undefined) a.pagina = b.pagina === 'wpc1252' ? 'wpc1252' : 'cp850';
-  for (const k of ['cortar', 'logo', 'autoComandas', 'caja']) if (b[k] !== undefined) a[k] = si(b[k]);
-  if (b.copiasComanda !== undefined) a.copiasComanda = Math.max(1, Math.min(3, parseInt(b.copiasComanda, 10) || 1));
+  for (const k of ['cortar', 'logo']) if (b[k] !== undefined) a[k] = si(b[k]);
 
   if (a.modo === 'com' && !/^COM\d{1,3}$/.test(a.puerto)) throw new Error('Indique el puerto COM de la impresora (ej: COM5)');
-  if (a.modo === 'windows' && !a.nombre) throw new Error('Indique el nombre de la impresora en Windows');
+  if (a.modo === 'windows' && !a.nombreWindows) throw new Error('Indique el nombre de la impresora en Windows');
   if (a.modo === 'red' && !/^[a-zA-Z0-9.-]+$/.test(a.host)) throw new Error('Indique la IP de la impresora (ej: 192.168.1.50)');
   if (['com', 'windows'].includes(a.modo) && process.platform !== 'win32')
     throw new Error('Esa forma de conexión solo funciona con el servidor en Windows');
-
-  db.prepare("INSERT INTO ajustes (clave, valor) VALUES ('impresora', ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor").run(
-    JSON.stringify(a)
-  );
-  avisar();
-  procesar();
   return a;
 }
 
-const activa = () => ajustes().modo !== 'ninguna';
+function comprobarDuplicados(lista, imp) {
+  for (const o of lista) {
+    if (o.id === imp.id) continue;
+    if (o.nombre.toLowerCase() === imp.nombre.toLowerCase()) throw new Error(`Ya hay una impresora llamada "${imp.nombre}"`);
+    if (imp.modo === 'com' && o.modo === 'com' && o.puerto === imp.puerto) throw new Error(`El puerto ${imp.puerto} ya lo usa la impresora "${o.nombre}"`);
+    if (imp.modo === 'red' && o.modo === 'red' && o.host === imp.host && o.puertoRed === imp.puertoRed)
+      throw new Error(`Esa IP ya la usa la impresora "${o.nombre}"`);
+  }
+}
+
+function crearImpresora(b) {
+  const lista = impresoras();
+  if (lista.length >= MAX_IMPRESORAS) throw new Error(`Se pueden configurar hasta ${MAX_IMPRESORAS} impresoras`);
+  const imp = { ...validarImpresora(b), id: Math.max(0, ...lista.map((i) => i.id)) + 1 };
+  comprobarDuplicados(lista, imp);
+  escribir('impresoras', [...lista, imp]);
+  // la primera impresora toma todas las tareas que estaban en PDF
+  if (!lista.length) {
+    const a = asignaciones();
+    escribir('asignaciones', { ...a, ...Object.fromEntries(DOCUMENTOS.map((d) => [d, a[d] ?? imp.id])) });
+  }
+  avisar();
+  return imp;
+}
+
+function actualizarImpresora(id, b) {
+  const lista = impresoras();
+  const actual = lista.find((i) => i.id === Number(id));
+  if (!actual) throw new Error('Impresora no encontrada');
+  const imp = { ...validarImpresora(b, actual), id: actual.id };
+  comprobarDuplicados(lista, imp);
+  escribir('impresoras', lista.map((i) => (i.id === imp.id ? imp : i)));
+  avisar();
+  procesar(imp.id);
+  return imp;
+}
+
+function eliminarImpresora(id) {
+  id = Number(id);
+  escribir('impresoras', impresoras().filter((i) => i.id !== id));
+  const a = asignaciones();
+  for (const d of DOCUMENTOS) if (a[d] === id) a[d] = null;
+  escribir('asignaciones', a);
+  db.prepare("UPDATE cola_impresion SET estado = 'cancelado' WHERE impresora_id = ? AND estado IN ('pendiente','error')").run(id);
+  delete estados[id];
+  avisar();
+}
+
+function guardarAsignaciones(b) {
+  const a = asignaciones();
+  const ids = new Set(impresoras().map((i) => i.id));
+  for (const d of DOCUMENTOS) {
+    if (b[d] === undefined) continue;
+    const v = b[d] === '' || b[d] === null ? null : Number(b[d]);
+    if (v !== null && !ids.has(v)) throw new Error('Impresora no encontrada');
+    a[d] = v;
+  }
+  if (b.autoComandas !== undefined) a.autoComandas = si(b.autoComandas);
+  if (b.copiasComanda !== undefined) a.copiasComanda = Math.max(1, Math.min(3, parseInt(b.copiasComanda, 10) || 1));
+  escribir('asignaciones', a);
+  avisar();
+  return a;
+}
 
 // ---------------- estado y avisos ----------------
-const estado = { ultimoError: '', ultimoErrorEn: null, ultimoImpresoEn: null, imprimiendo: false };
+const estados = {}; // por impresora: { ultimoError, ultimoErrorEn, ultimoImpresoEn }
+const estadoDe = (id) => (estados[id] ||= { ultimoError: '', ultimoErrorEn: null, ultimoImpresoEn: null });
 let emitir = () => {};
 let alImprimir = () => {};
 /** index.js entrega cómo avisar en tiempo real y qué hacer al imprimir un trabajo */
-function configurar(opciones) {
-  emitir = opciones.emitir || emitir;
-  alImprimir = opciones.alImprimir || alImprimir;
+function configurar(o) {
+  emitir = o.emitir || emitir;
+  alImprimir = o.alImprimir || alImprimir;
 }
 
 function resumen() {
-  const a = ajustes();
-  const c = db
-    .prepare(
-      `SELECT SUM(estado = 'pendiente') AS pendientes, SUM(estado = 'error') AS errores FROM cola_impresion
-       WHERE estado IN ('pendiente','error')`
-    )
-    .get();
+  const a = asignaciones();
+  const cuentas = new Map(
+    db
+      .prepare(
+        `SELECT impresora_id AS id, SUM(estado = 'pendiente') AS pendientes, SUM(estado = 'error') AS errores
+         FROM cola_impresion WHERE estado IN ('pendiente','error') GROUP BY impresora_id`
+      )
+      .all()
+      .map((r) => [r.id, r])
+  );
+  const lista = impresoras().map((i) => {
+    const c = cuentas.get(i.id) || {};
+    const e = estadoDe(i.id);
+    return {
+      id: i.id,
+      nombre: i.nombre,
+      modo: i.modo,
+      tareas: DOCUMENTOS.filter((d) => a[d] === i.id),
+      pendientes: c.pendientes || 0,
+      errores: c.errores || 0,
+      ok: !(c.errores > 0),
+      ultimoError: e.ultimoError,
+      ultimoImpresoEn: e.ultimoImpresoEn,
+    };
+  });
+  const asignada = (d) => lista.some((i) => i.id === a[d]);
   return {
-    activa: a.modo !== 'ninguna',
-    caja: a.modo !== 'ninguna' && a.caja,
-    autoComandas: a.modo !== 'ninguna' && a.autoComandas,
-    modo: a.modo,
-    pendientes: c.pendientes || 0,
-    errores: c.errores || 0,
-    ok: !(c.errores > 0),
-    ultimoError: estado.ultimoError,
-    ultimoErrorEn: estado.ultimoErrorEn,
-    ultimoImpresoEn: estado.ultimoImpresoEn,
+    activa: lista.length > 0,
+    comanda: asignada('comanda'),
+    precuenta: asignada('precuenta'),
+    comprobante: asignada('comprobante'),
+    autoComandas: asignada('comanda') && a.autoComandas,
+    pendientes: lista.reduce((s, i) => s + i.pendientes, 0),
+    errores: lista.reduce((s, i) => s + i.errores, 0),
+    impresoras: lista,
   };
 }
 const avisar = () => emitir('impresora', resumen());
 
 function cola(limite = 40) {
+  const nombres = new Map(impresoras().map((i) => [i.id, i.nombre]));
   return db
     .prepare(
-      `SELECT id, tipo, ref, titulo, estado, intentos, error, creado_en, impreso_en FROM cola_impresion
+      `SELECT id, impresora_id, tipo, ref, titulo, estado, intentos, error, creado_en, impreso_en FROM cola_impresion
        ORDER BY CASE WHEN estado IN ('pendiente','error') THEN 0 ELSE 1 END, id DESC LIMIT ?`
     )
-    .all(limite);
+    .all(limite)
+    .map((t) => ({ ...t, impresora: nombres.get(t.impresora_id) || '(quitada)' }));
 }
 
 // ---------------- encolar ----------------
-function encolar(tipo, ref, titulo, datos, copias = 1) {
-  const ins = db.prepare('INSERT INTO cola_impresion (tipo, ref, titulo, datos, creado_en) VALUES (?,?,?,?,?)');
-  for (let i = 0; i < copias; i++) ins.run(tipo, ref ?? null, titulo, datos, ahora());
+function encolar(impresoraId, tipo, ref, titulo, datos, copias = 1) {
+  const ins = db.prepare('INSERT INTO cola_impresion (impresora_id, tipo, ref, titulo, datos, creado_en) VALUES (?,?,?,?,?,?)');
+  for (let i = 0; i < copias; i++) ins.run(impresoraId, tipo, ref ?? null, titulo, datos, ahora());
   avisar();
-  procesar();
+  procesar(impresoraId);
 }
 
-/** Quita de la cola los trabajos aún no impresos de una comanda (al reemplazarlos por otro) */
+/** Quita de la cola los trabajos aún no impresos de un documento (al reemplazarlos por otro) */
 function descartarPendientes(tipo, ref) {
   db.prepare("UPDATE cola_impresion SET estado = 'cancelado' WHERE tipo = ? AND ref = ? AND estado IN ('pendiente','error')").run(tipo, ref);
 }
 
-function reintentar(id) {
-  const where = id ? 'id = ? AND ' : '';
-  db.prepare(`UPDATE cola_impresion SET estado = 'pendiente' WHERE ${where}estado = 'error'`).run(...(id ? [id] : []));
-  clearTimeout(temporizador);
+/** Reintenta ya: un trabajo (id), todo lo de una impresora (impresoraId) o todo */
+function reintentar({ id, impresoraId } = {}) {
+  if (id) db.prepare("UPDATE cola_impresion SET estado = 'pendiente' WHERE id = ? AND estado = 'error'").run(id);
+  else if (impresoraId) db.prepare("UPDATE cola_impresion SET estado = 'pendiente' WHERE impresora_id = ? AND estado = 'error'").run(impresoraId);
+  else db.prepare("UPDATE cola_impresion SET estado = 'pendiente' WHERE estado = 'error'").run();
+  for (const t of Object.values(temporizadores)) clearTimeout(t);
   avisar();
-  procesar();
+  procesarTodas();
 }
 
 function cancelar(id) {
+  const t = db.prepare('SELECT impresora_id FROM cola_impresion WHERE id = ?').get(id);
   db.prepare("UPDATE cola_impresion SET estado = 'cancelado' WHERE id = ? AND estado IN ('pendiente','error')").run(id);
   avisar();
-  procesar();
+  if (t) procesar(t.impresora_id);
 }
 
-// ---------------- envío ----------------
-let trabajando = false;
-let temporizador = null;
-let fallosSeguidos = 0;
+// ---------------- envío (una cola por impresora) ----------------
+const trabajando = {};
+const temporizadores = {};
+const fallosSeguidos = {};
 
-/** Procesa la cola en orden. Si un trabajo falla, espera y lo reintenta antes de seguir con los demás. */
-async function procesar() {
-  if (trabajando) return;
-  trabajando = true;
+/** Procesa en orden la cola de una impresora. Si un trabajo falla, espera y lo reintenta antes de seguir. */
+async function procesar(impresoraId) {
+  const id = Number(impresoraId);
+  if (trabajando[id]) return;
+  trabajando[id] = true;
   try {
     for (;;) {
-      const a = ajustes();
-      if (a.modo === 'ninguna') break;
-      const t = db.prepare("SELECT * FROM cola_impresion WHERE estado IN ('pendiente','error') ORDER BY id LIMIT 1").get();
+      const imp = impresora(id);
+      if (!imp) break;
+      const t = db
+        .prepare("SELECT * FROM cola_impresion WHERE impresora_id = ? AND estado IN ('pendiente','error') ORDER BY id LIMIT 1")
+        .get(id);
       if (!t) break;
-      estado.imprimiendo = true;
+      const e = estadoDe(id);
       try {
-        await enviar(a, Buffer.from(t.datos), t);
+        await enviar(imp, Buffer.from(t.datos), t);
         db.prepare("UPDATE cola_impresion SET estado = 'impreso', impreso_en = ?, error = '' WHERE id = ?").run(ahora(), t.id);
-        estado.ultimoImpresoEn = ahora();
-        estado.ultimoError = '';
-        fallosSeguidos = 0;
+        e.ultimoImpresoEn = ahora();
+        e.ultimoError = '';
+        fallosSeguidos[id] = 0;
         try {
           alImprimir(t);
-        } catch (e) {
-          console.error('Impresora:', e.message);
+        } catch (err) {
+          console.error('Impresora:', err.message);
         }
         avisar();
-      } catch (e) {
-        fallosSeguidos++;
-        const msg = String(e.message || e).slice(0, 300);
+      } catch (err) {
+        fallosSeguidos[id] = (fallosSeguidos[id] || 0) + 1;
+        const msg = String(err.message || err).slice(0, 300);
         db.prepare("UPDATE cola_impresion SET estado = 'error', intentos = intentos + 1, error = ? WHERE id = ?").run(msg, t.id);
-        estado.ultimoError = msg;
-        estado.ultimoErrorEn = ahora();
-        console.error(`Impresora: no se pudo imprimir "${t.titulo}": ${msg}`);
+        e.ultimoError = msg;
+        e.ultimoErrorEn = ahora();
+        console.error(`Impresora "${imp.nombre}": no se pudo imprimir "${t.titulo}": ${msg}`);
         // reintento: 5 s, 10 s, 20 s... hasta 60 s
-        const espera = Math.min(60, 5 * 2 ** Math.min(fallosSeguidos - 1, 4)) * 1000;
-        clearTimeout(temporizador);
-        temporizador = setTimeout(procesar, espera);
-        temporizador.unref?.();
+        const espera = Math.min(60, 5 * 2 ** Math.min(fallosSeguidos[id] - 1, 4)) * 1000;
+        clearTimeout(temporizadores[id]);
+        temporizadores[id] = setTimeout(() => procesar(id), espera);
+        temporizadores[id].unref?.();
         avisar();
         break;
       }
     }
   } finally {
-    estado.imprimiendo = false;
-    trabajando = false;
+    trabajando[id] = false;
   }
 }
+const procesarTodas = () => impresoras().forEach((i) => procesar(i.id));
 
-function enviar(a, datos, trabajo) {
-  if (a.modo === 'archivo') {
+function enviar(imp, datos, trabajo) {
+  if (imp.modo === 'archivo') {
     fs.mkdirSync(DIR_ARCHIVOS, { recursive: true });
-    fs.writeFileSync(path.join(DIR_ARCHIVOS, `${String(trabajo.id).padStart(5, '0')}-${trabajo.tipo}.bin`), datos);
+    const nombre = imp.nombre.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    fs.writeFileSync(path.join(DIR_ARCHIVOS, `${String(trabajo.id).padStart(5, '0')}-${nombre}-${trabajo.tipo}.bin`), datos);
     return Promise.resolve();
   }
-  if (a.modo === 'red') return enviarRed(a.host, a.puertoRed, datos);
-  if (a.modo === 'com') return powershell('com', ['-Puerto', a.puerto, '-Baudios', String(a.baudios)], datos);
-  if (a.modo === 'windows') return powershell('windows', ['-Impresora', a.nombre], datos);
-  return Promise.reject(new Error('Ticketera no configurada'));
+  if (imp.modo === 'red') return enviarRed(imp.host, imp.puertoRed, datos);
+  if (imp.modo === 'com') return powershell('com', ['-Puerto', imp.puerto, '-Baudios', String(imp.baudios)], datos);
+  if (imp.modo === 'windows') return powershell('windows', ['-Impresora', imp.nombreWindows], datos);
+  return Promise.reject(new Error('Impresora mal configurada'));
 }
 
 function enviarRed(host, puerto, datos) {
@@ -391,12 +511,20 @@ async function dispositivos() {
 }
 
 // trabajos que quedaron a medias si el servidor se apagó
-setTimeout(procesar, 2000).unref?.();
+setTimeout(procesarTodas, 2000).unref?.();
 
 module.exports = {
-  ajustes,
-  guardarAjustes,
-  activa,
+  DOCUMENTOS,
+  MAX_IMPRESORAS,
+  impresoras,
+  impresora,
+  crearImpresora,
+  actualizarImpresora,
+  eliminarImpresora,
+  asignaciones,
+  guardarAsignaciones,
+  destino,
+  opciones,
   resumen,
   cola,
   encolar,
@@ -405,5 +533,4 @@ module.exports = {
   cancelar,
   dispositivos,
   configurar,
-  hostname: os.hostname(),
 };
