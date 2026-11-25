@@ -45,6 +45,7 @@ Para desarrollo (se reinicia al guardar cambios): `npm run dev`.
 | **Etapas** | Generado → **En cocina** (se genera el ticket) → **Entregado** (lo marca el mozo), y Cancelado. Cada cambio queda en el historial con hora y usuario. | Mozo, Caja, Admin |
 | **Tickets de cocina** | Pantalla "Tickets" para la PC que tiene la impresora: avisa con sonido cada ticket nuevo y permite imprimirlo (uno o todos los pendientes). En Chrome/Edge se puede activar la **impresión automática**. Si un admin modifica una comanda ya enviada, el ticket se reimprime marcado como MODIFICADA. | Caja, Admin |
 | **Cobro y comprobante** | Cobrar una comanda o **la mesa completa**, eligiendo la forma de pago (efectivo con cálculo de vuelto, Yape, Plin, tarjeta, transferencia, otro). Se genera el **comprobante en PDF**. El botón **"Detalle para boleta SUNAT"** muestra los platos agrupados (cantidad, descripción, precio e importe) para copiarlos con un toque en SEE-SOL. Un cobro se puede anular. Cobrar libera la mesa. | Caja, Admin |
+| **Comprobantes SUNAT** | Al cobrar se elige **nota de venta** (se imprime al instante) o **boleta/factura SUNAT**. En el segundo caso se emite en SOL con los datos del cobro, se descarga el XML y se sube en *Comprobantes SUNAT*: el sistema lo vincula con su cobro y lo imprime (ticketera o PDF) con QR. Ver sección 3.2. | Caja, Admin |
 | **Reporte del día** | Comandas, mesas atendidas, empleados en turno, total vendido y cobrado, **cobros por forma de pago**, ventas por empleado y por mesa, platos más vendidos, **guarniciones servidas** y tiempo promedio de cocina a entrega. Se puede elegir otra fecha e imprimir. | Admin, Caja |
 | **Turnos** | El turno se abre automáticamente al ingresar. El empleado lo cierra con "Finalizar turno y salir". | Todos |
 
@@ -179,6 +180,29 @@ El servidor imprime directo en la ticketera, sin abrir diálogos. Funciona con i
 | Acentos raros | Cambie "Acentos y ñ" a Windows-1252 (o al revés) e imprima otra prueba. |
 | Imprime pero no corta | Desmarque "Cortar el papel" si el modelo no tiene cortador. |
 
+### 3.2 Boletas y facturas electrónicas (SUNAT, portal SOL)
+
+Las boletas y facturas se emiten en el portal **SOL de SUNAT** (SEE-SOL). El sistema facilita los datos
+para emitirlas y luego imprime el comprobante a partir del XML que entrega SUNAT.
+
+1. **Cobrar:** en la ventana de cobro elija **"Boleta o factura (SUNAT)"**. Se cobra sin imprimir y se
+   muestra el detalle (cantidad, descripción, precio, importe) para copiarlo en SOL con un toque.
+2. **Emitir en SOL** la boleta o factura y **descargar su XML** (o el ZIP que lo contiene).
+3. **Subir el XML** en la pantalla **Comprobantes SUNAT** (tocando el recuadro o arrastrando el archivo).
+   El sistema lee el comprobante y lo **vincula solo** con el cobro pendiente del mismo día y el mismo total.
+   Si hay varios cobros con ese total, pregunta a cuál corresponde. Luego **lo imprime**: en la ticketera
+   asignada a comprobantes o, sin ticketera, en PDF.
+4. En *Comprobantes SUNAT* quedan los **pendientes** (cobros esperando su XML, con sus datos para SOL)
+   y los **emitidos** del día, con Imprimir, PDF y el XML original. El detalle de cada comanda muestra
+   su boleta o factura.
+
+Lo impreso incluye los datos del XML: emisor (razón social, RUC, dirección), tipo y serie-número,
+fecha, cliente (DNI o RUC), detalle, operación gravada, IGV, importe total, monto en letras, el valor
+resumen y el **código QR** con el formato de SUNAT. Los XML se guardan en `data/sunat/`.
+
+> Sobre la validez de esta representación impresa como sustituto del PDF que entrega SOL, consulte
+> con su contador. Los datos y el QR salen del propio XML emitido por SUNAT.
+
 ---
 
 ## 4. Primer uso
@@ -250,6 +274,7 @@ comandas/
 │   ├── index.js           API REST + eventos en tiempo real (SSE) + archivos estáticos
 │   ├── db.js              esquema SQLite, migraciones, datos iniciales y respaldos
 │   ├── pdf.js             tickets de cocina y comprobantes en PDF (80 mm)
+│   ├── sunat.js           lectura del XML de boletas y facturas de SUNAT (UBL 2.1) y su registro
 │   ├── escpos.js          los mismos documentos en ESC/POS para la ticketera (logo incluido)
 │   └── impresora.js       ajustes de la ticketera, cola con reintentos y envío (COM, Windows, red)
 ├── public/                app web para celulares (HTML/CSS/JS sin frameworks)
