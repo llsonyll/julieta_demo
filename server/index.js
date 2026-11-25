@@ -1007,7 +1007,7 @@ app.post(
   })
 );
 
-// ---------------- ticketera térmica (ESC/POS) ----------------
+// ---------------- impresoras térmicas (ESC/POS) ----------------
 // Al imprimirse un ticket de cocina, la comanda deja de estar "pendiente de impresión"
 impresora.configurar({
   emitir,
@@ -1018,32 +1018,42 @@ impresora.configurar({
   },
 });
 
-function opcionesTicketera() {
-  const a = impresora.ajustes();
-  return { columnas: a.columnas, pagina: a.pagina, cortar: a.cortar, logo: a.logo, nombre: CONFIG.nombreRestaurante };
-}
+const NOMBRE_DOC = { comanda: 'las comandas de cocina', precuenta: 'las precuentas', comprobante: 'los comprobantes' };
+const bytesPara = (imp, bloques) => documentoESCPOS([bloques], { ...impresora.opciones(imp), nombre: CONFIG.nombreRestaurante });
 const lugarCorto = (c) => (c.tipo === 'local' ? `Mesa ${c.mesa_numero ?? '?'}` : `Llevar${c.cliente ? ` ${c.cliente}` : ''}`);
 
-/** Manda a la ticketera el ticket de cocina de cada comanda (reemplaza el que estuviera en cola) */
-function imprimirTicketsCocina(comandas) {
-  const a = impresora.ajustes();
+/** Impresora asignada a un documento; si no hay, error para el usuario */
+function exigirImpresora(doc) {
+  const imp = impresora.destino(doc);
+  if (!imp) fail(400, `No hay impresora asignada para ${NOMBRE_DOC[doc]} (Gestión → Impresoras)`);
+  return imp;
+}
+
+/** Manda a la impresora de cocina el ticket de cada comanda (reemplaza el que estuviera en cola) */
+function imprimirTicketsCocina(comandas, imp) {
+  const copias = impresora.asignaciones().copiasComanda;
   for (const c of comandas) {
     impresora.descartarPendientes('comanda', c.id);
-    const datos = documentoESCPOS([ticketCocina(c, momento())], opcionesTicketera());
-    impresora.encolar('comanda', c.id, `Comanda #${c.numero_dia} · ${lugarCorto(c)}${c.ticket_modificado ? ' (modificada)' : ''}`, datos, a.copiasComanda);
+    const titulo = `Comanda #${c.numero_dia} · ${lugarCorto(c)}${c.ticket_modificado ? ' (modificada)' : ''}`;
+    impresora.encolar(imp.id, 'comanda', c.id, titulo, bytesPara(imp, ticketCocina(c, momento())), copias);
   }
 }
 
 /** Impresión automática al enviar a cocina (o al modificar una comanda que ya estaba en cocina) */
 function ticketsAutomaticos(id) {
-  const a = impresora.ajustes();
-  if (a.modo === 'ninguna' || !a.autoComandas) return;
+  const imp = impresora.destino('comanda');
+  if (!imp || !impresora.asignaciones().autoComandas) return;
   const c = obtenerComanda(id);
-  if (c && EN_COCINA.includes(c.estado) && !c.ticket_impreso) imprimirTicketsCocina([c]);
+  if (c && EN_COCINA.includes(c.estado) && !c.ticket_impreso) imprimirTicketsCocina([c], imp);
 }
 
-const exigirTicketera = () => {
-  if (!impresora.activa()) fail(400, 'No hay ticketera configurada (Gestión → Impresora)');
+// errores de validación del módulo de impresoras -> 400 con su mensaje
+const comoError400 = (fn) => {
+  try {
+    return fn();
+  } catch (e) {
+    fail(400, e.message);
+  }
 };
 
 app.get('/api/impresora/estado', ruta(() => impresora.resumen()));
@@ -1051,20 +1061,27 @@ app.get('/api/impresora/estado', ruta(() => impresora.resumen()));
 app.get(
   '/api/impresora',
   rol('admin', 'caja'),
-  ruta(() => ({ ajustes: impresora.ajustes(), estado: impresora.resumen(), cola: impresora.cola(), windows: process.platform === 'win32' }))
+  ruta(() => ({
+    impresoras: impresora.impresoras(),
+    asignaciones: impresora.asignaciones(),
+    estado: impresora.resumen(),
+    cola: impresora.cola(),
+    maximo: impresora.MAX_IMPRESORAS,
+    windows: process.platform === 'win32',
+  }))
 );
 
-app.put(
-  '/api/impresora',
+app.post('/api/impresoras', rol('admin'), ruta((req) => comoError400(() => impresora.crearImpresora(req.body || {}))));
+app.put('/api/impresoras/:id', rol('admin'), ruta((req) => comoError400(() => impresora.actualizarImpresora(req.params.id, req.body || {}))));
+app.delete(
+  '/api/impresoras/:id',
   rol('admin'),
   ruta((req) => {
-    try {
-      return impresora.guardarAjustes(req.body || {});
-    } catch (e) {
-      fail(400, e.message);
-    }
+    impresora.eliminarImpresora(req.params.id);
+    return { ok: true };
   })
 );
+app.put('/api/impresora/asignaciones', rol('admin'), ruta((req) => comoError400(() => impresora.guardarAsignaciones(req.body || {}))));
 
 app.get(
   '/api/impresora/dispositivos',
@@ -1079,11 +1096,14 @@ app.get(
 );
 
 app.post(
-  '/api/impresora/prueba',
+  '/api/impresoras/:id/prueba',
   rol('admin', 'caja'),
-  ruta(() => {
-    exigirTicketera();
-    impresora.encolar('prueba', null, 'Ticket de prueba', documentoPrueba(opcionesTicketera(), CONFIG.nombreRestaurante, momento()));
+  ruta((req) => {
+    const imp = impresora.impresora(req.params.id);
+    if (!imp) fail(404, 'Impresora no encontrada');
+    const tareas = impresora.DOCUMENTOS.filter((d) => impresora.asignaciones()[d] === imp.id).map((d) => NOMBRE_DOC[d]);
+    const datos = documentoPrueba({ ...impresora.opciones(imp), nombre: CONFIG.nombreRestaurante }, `${imp.nombre} · ${CONFIG.nombreRestaurante}`, momento(), tareas);
+    impresora.encolar(imp.id, 'prueba', null, `Prueba · ${imp.nombre}`, datos);
     return { ok: true };
   })
 );
@@ -1092,7 +1112,7 @@ app.post(
   '/api/impresora/reintentar',
   rol('admin', 'caja', 'cocina'),
   ruta((req) => {
-    impresora.reintentar(req.body?.id ? Number(req.body.id) : null);
+    impresora.reintentar({ id: Number(req.body?.id) || null, impresoraId: Number(req.body?.impresora_id) || null });
     return impresora.resumen();
   })
 );
@@ -1106,48 +1126,48 @@ app.post(
   })
 );
 
-// Imprimir (o reimprimir) tickets de cocina en la ticketera. { ids: [comandas] }
+// Imprimir (o reimprimir) tickets de cocina. { ids: [comandas] }
 app.post(
   '/api/imprimir/comanda',
   rol('admin', 'caja', 'cocina', 'mozo'),
   ruta((req) => {
-    exigirTicketera();
+    const imp = exigirImpresora('comanda');
     const comandas = obtenerComandas(listaIds(req.body?.ids)).filter((c) => c.estado !== 'generado' && c.estado !== 'cancelado');
     if (!comandas.length) fail(404, 'No hay tickets para imprimir');
-    imprimirTicketsCocina(comandas);
-    return { ok: true, enCola: comandas.length };
+    imprimirTicketsCocina(comandas, imp);
+    return { ok: true, enCola: comandas.length, impresora: imp.nombre };
   })
 );
 
-// Precuenta en la ticketera. { ids: [comandas] }
+// Precuenta. { ids: [comandas] }
 app.post(
   '/api/imprimir/precuenta',
   rol('admin', 'mozo', 'caja'),
   ruta((req) => {
-    exigirTicketera();
+    const imp = exigirImpresora('precuenta');
     const comandas = obtenerComandas(listaIds(req.body?.ids)).filter((c) => c.estado !== 'cancelado' && !c.pagada);
     if (!comandas.length) fail(404, 'No hay consumo pendiente para la precuenta');
-    const datos = documentoESCPOS([comprobante({ comandas, config: CONFIG, ahora: ahora() })], opcionesTicketera());
-    impresora.encolar('precuenta', comandas[0].id, `Precuenta · ${lugarCorto(comandas[0])}`, datos);
-    return { ok: true };
+    const datos = bytesPara(imp, comprobante({ comandas, config: CONFIG, ahora: ahora() }));
+    impresora.encolar(imp.id, 'precuenta', comandas[0].id, `Precuenta · ${lugarCorto(comandas[0])}`, datos);
+    return { ok: true, impresora: imp.nombre };
   })
 );
 
-// Comprobante de un cobro en la ticketera. { cobro_id }
+// Comprobante de un cobro. { cobro_id }
 app.post(
   '/api/imprimir/comprobante',
   rol('admin', 'caja'),
   ruta((req) => {
-    exigirTicketera();
+    const imp = exigirImpresora('comprobante');
     const id = Number(req.body?.cobro_id);
     const cobro = db.prepare('SELECT * FROM cobros WHERE id = ?').get(id);
     if (!cobro) fail(404, 'Cobro no encontrado');
     if (cobro.anulado) fail(400, 'Este cobro fue anulado');
     const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
     const cajero = db.prepare('SELECT nombre FROM usuarios WHERE id = ?').get(cobro.usuario_id)?.nombre;
-    const datos = documentoESCPOS([comprobante({ cobro, comandas: obtenerComandas(ids), config: CONFIG, cajero })], opcionesTicketera());
-    impresora.encolar('comprobante', id, `Comprobante N° ${String(id).padStart(6, '0')}`, datos);
-    return { ok: true };
+    const datos = bytesPara(imp, comprobante({ cobro, comandas: obtenerComandas(ids), config: CONFIG, cajero }));
+    impresora.encolar(imp.id, 'comprobante', id, `Comprobante N° ${String(id).padStart(6, '0')}`, datos);
+    return { ok: true, impresora: imp.nombre };
   })
 );
 

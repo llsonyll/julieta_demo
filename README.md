@@ -67,9 +67,9 @@ hasta que se entreguen; su ticket vuelve a quedar pendiente de impresión).
   guarnición resaltados ("CAMBIO: Yuca frita (en vez de Arroz)", "SIN ARROZ") y notas.
 - **Comprobante:** logo del local (`server/logo-comprobante.png`, en negro para impresora térmica), datos del local (de `config.json`), detalle, total, forma de pago, recibido y vuelto.
   Es un **comprobante interno**: no reemplaza a la boleta o factura electrónica.
-- **Con ticketera térmica** (Gestión → Impresora, ver sección 3.1): el servidor imprime directo en
-  la ticketera en ESC/POS, sin diálogos y cortando el papel. Cada comanda sale sola al enviarse a
-  cocina; la precuenta y el comprobante salen al pedirlos en caja.
+- **Con impresoras térmicas** (Gestión → Impresoras, ver sección 3.1): el servidor imprime directo
+  en ESC/POS, sin diálogos. Se puede tener una impresora para todo o, por ejemplo, una en cocina para
+  las comandas y otra en caja para precuentas y comprobantes.
 - **Sin ticketera:** se generan PDF de 80 mm. Con **Chrome o Edge** se abre directamente el diálogo de
   impresión (o se imprime solo, con la opción automática y la impresora predeterminada); en otros
   navegadores el PDF se abre en una pestaña para imprimirlo.
@@ -132,43 +132,55 @@ Crea un servicio `systemd` llamado `comandas` (`systemctl status comandas`, `jou
 4. Si el router tiene una **red de invitados** para clientes, no la use para los empleados:
    esas redes suelen aislar los dispositivos y no dejan llegar a la PC.
 
-### 3.1 Ticketera térmica (Bluetooth, USB o red)
+### 3.1 Impresoras térmicas (Bluetooth, USB o red)
 
-El servidor imprime directo en la ticketera, sin abrir diálogos. Funciona con impresoras ESC/POS
-(Xprinter, Epson y compatibles) de 80 mm o 58 mm. Se configura en **Gestión → Impresora**.
+El servidor imprime directo en las impresoras térmicas, sin abrir diálogos. Funciona con impresoras
+ESC/POS (Xprinter, Epson y compatibles) de 80 mm o 58 mm. Se configuran en **Gestión → Impresoras**:
+se pueden agregar hasta 4 y decidir **qué imprime cada una**.
 
-**Bluetooth (por ejemplo, Xprinter con Bluetooth) en Windows 10:**
+| Documento | Ejemplo con una impresora | Ejemplo con dos |
+|---|---|---|
+| Comandas de cocina | Ticketera | Cocina |
+| Precuentas | Ticketera | Caja |
+| Comprobantes de pago | Ticketera | Caja |
 
-1. Encienda la ticketera. En la PC servidor abra **Configuración → Dispositivos → Bluetooth y otros
-   dispositivos → Agregar Bluetooth** y elija la impresora. Si pide un PIN, suele ser `0000` o `1234`
-   (viene en el manual o en el ticket de autodiagnóstico de la impresora).
+Un documento sin impresora asignada se imprime en PDF desde el navegador, como antes.
+
+**Agregar una impresora Bluetooth (por ejemplo, Xprinter) en Windows 10:**
+
+1. Encienda la impresora. En la PC servidor abra **Configuración → Dispositivos → Bluetooth y otros
+   dispositivos → Agregar Bluetooth** y elija la impresora. Si pide un PIN, suele ser `0000` o `1234`.
 2. En la misma pantalla abra **Más opciones de Bluetooth → Puertos COM** y anote el puerto
-   **Saliente** de la impresora (por ejemplo `COM5`).
-3. En el sistema, entre como administrador a **Gestión → Impresora**, elija
-   **"Bluetooth o USB (puerto COM)"** y escriba el puerto (o use **Buscar dispositivos** y tóquelo).
-4. Pulse **Guardar** y luego **Imprimir prueba**. El ticket de prueba muestra el logo, los acentos y
-   el ancho: los números de la línea de prueba deben ocupar todo el renglón.
-   - Si los acentos salen como símbolos raros, cambie "Acentos y ñ" a **Windows-1252**.
+   **Saliente** de esa impresora (por ejemplo `COM5`). Cada impresora Bluetooth tiene su propio puerto.
+3. En **Gestión → Impresoras** pulse **Agregar impresora**, póngale un nombre (por ejemplo "Cocina" o
+   "Caja"), elija **"Bluetooth o USB (puerto COM)"** y escriba el puerto (o use **Buscar dispositivos**).
+   Marque "Cortar el papel" solo si el modelo tiene cortador automático (los portátiles suelen tener
+   barra para rasgar).
+4. En **Qué imprime cada una**, elija la impresora para comandas, precuentas y comprobantes, y guarde.
+5. Pulse **Prueba** junto a la impresora. El ticket de prueba dice qué tiene asignado y muestra el logo,
+   los acentos y el ancho:
+   - Si los acentos salen como símbolos raros, edite la impresora y cambie "Acentos y ñ" a **Windows-1252**.
    - Si la línea de números se parte en dos, elija el ancho de **42 caracteres**.
 
 **Otras conexiones:**
 
-- **Instalada en Windows:** si la ticketera ya está instalada con el controlador del fabricante
+- **Instalada en Windows:** si la impresora ya está instalada con el controlador del fabricante
   (USB o Bluetooth), elija "Impresora instalada en Windows" y su nombre tal como aparece en
   *Dispositivos e impresoras*. El sistema le envía los comandos directamente (RAW).
-- **Red (IP):** elija "Impresora de red" y escriba la IP de la ticketera (puerto 9100). Reserve esa
-  IP en el router para que no cambie.
+- **Red (IP):** elija "Impresora de red" y escriba su IP (puerto 9100). Reserve esa IP en el router.
 
 **Cómo trabaja:**
 
 - Cada comanda se imprime sola al enviarse a cocina (se puede desactivar o pedir 2 o 3 copias).
   Si un admin modifica una comanda que ya estaba en cocina, se reimprime marcada como MODIFICADA.
-- La precuenta y el comprobante de pago salen por la ticketera al pedirlos en caja (opción "Imprimir
-  también precuentas y comprobantes"). El PDF del comprobante sigue disponible en el detalle de la comanda.
-- Todo pasa por una **cola**: si la impresora está apagada, sin papel o el Bluetooth se desconectó,
-  los tickets esperan y se reintentan solos, en orden. La caja y la cocina ven un aviso y el ícono de
-  impresora de la barra superior se pone en rojo. En la pantalla **Cocina** se ve la cola, con
-  "Reintentar ahora" y "Quitar".
+- La precuenta y el comprobante salen por su impresora al pedirlos en caja. El PDF del comprobante
+  sigue disponible en el detalle de la comanda.
+- **Cada impresora tiene su propia cola:** si una está apagada, sin papel o se desconectó, sus tickets
+  esperan y se reintentan solos, en orden, y las demás siguen imprimiendo. La caja y la cocina ven un
+  aviso con el nombre de la impresora, y el ícono de impresora de la barra superior se pone en rojo.
+  En la pantalla **Cocina** se ve el estado de cada impresora y la cola, con "Reintentar" y "Quitar".
+- Al actualizar desde la versión con una sola ticketera, su configuración se convierte en una
+  impresora llamada "Ticketera" con las mismas tareas.
 
 **Si no imprime:**
 
@@ -251,7 +263,7 @@ comandas/
 │   ├── db.js              esquema SQLite, migraciones, datos iniciales y respaldos
 │   ├── pdf.js             tickets de cocina y comprobantes en PDF (80 mm)
 │   ├── escpos.js          los mismos documentos en ESC/POS para la ticketera (logo incluido)
-│   └── impresora.js       ajustes de la ticketera, cola con reintentos y envío (COM, Windows, red)
+│   └── impresora.js       impresoras y qué imprime cada una, colas con reintentos y envío (COM, Windows, red)
 ├── public/                app web para celulares (HTML/CSS/JS sin frameworks)
 ├── scripts/windows/       arranque automático en Windows
 ├── scripts/linux/         servicio systemd

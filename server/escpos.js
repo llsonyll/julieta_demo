@@ -245,7 +245,7 @@ function documentoESCPOS(paginas, opciones = {}) {
 }
 
 /** Ticket de prueba: confirma conexión, ancho y acentos */
-function documentoPrueba(opciones, nombreRestaurante, momento) {
+function documentoPrueba(opciones, nombreRestaurante, momento, tareas = []) {
   const columnas = opciones.columnas || 48;
   return documentoESCPOS(
     [
@@ -254,6 +254,7 @@ function documentoPrueba(opciones, nombreRestaurante, momento) {
         { t: 'texto', texto: 'PRUEBA DE IMPRESORA', tam: 14, negrita: true, alinear: 'center' },
         { t: 'texto', texto: nombreRestaurante, tam: 10, alinear: 'center' },
         { t: 'linea' },
+        { t: 'texto', texto: tareas.length ? `Imprime: ${tareas.join(', ')}` : 'Todavía no tiene tareas asignadas', tam: 10, negrita: true },
         { t: 'texto', texto: 'Acentos: áéíóú ÁÉÍÓÚ ñÑ ¿¡ ü °', tam: 10 },
         { t: 'texto', texto: `Ancho (${columnas} columnas):`, tam: 10 },
         { t: 'texto', texto: '1234567890'.repeat(Math.ceil(columnas / 10)).slice(0, columnas), tam: 10 },
