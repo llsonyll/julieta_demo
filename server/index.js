@@ -1170,6 +1170,14 @@ app.post(
     const metodo = METODOS_PAGO.includes(req.body.metodo) ? req.body.metodo : fail(400, 'Elija la forma de pago');
     const tipoComprobante = req.body.comprobante === 'sunat' ? 'sunat' : 'nota';
     const total = redondear(comandas.reduce((s, c) => s + c.total, 0));
+    // boleta/factura ya emitida en SOL: su XML viene con el cobro y se vincula en el mismo paso
+    const xmlSunat = tipoComprobante === 'sunat' && req.body.sunat_xml ? leerXMLSubido(req.body.sunat_xml) : null;
+    if (xmlSunat) {
+      const usado = vinculoExistente(xmlSunat.d);
+      if (usado) fail(409, usado);
+      if (Math.abs(xmlSunat.d.totales.total - total) >= 0.01 && !req.body.aceptar_diferencia)
+        fail(409, `El total de la ${nombreCorto(xmlSunat.d)} (${xmlSunat.d.totales.total.toFixed(2)}) no coincide con el cobro (${total.toFixed(2)})`);
+    }
     let recibido = null;
     if (metodo === 'Efectivo' && req.body.recibido !== undefined && req.body.recibido !== null && req.body.recibido !== '') {
       recibido = redondear(Number(req.body.recibido));
@@ -1188,11 +1196,16 @@ app.post(
           .get(mesaId);
         if (!pendiente) separarGrupo(mesaId);
       }
+      if (xmlSunat) {
+        const { comprobante: comp } = sunat.registrar(xmlSunat.d, xmlSunat.xml, req.user.id, ahora());
+        sunat.vincular(comp.id, id);
+      }
       return id;
     });
     emitir('mesas');
     ids.forEach((cid) => notificarComanda(cid, 'pago'));
-    return db.prepare('SELECT * FROM cobros WHERE id = ?').get(cobroId);
+    const sunatId = db.prepare('SELECT id FROM comprobantes_sunat WHERE cobro_id = ?').get(cobroId)?.id ?? null;
+    return { ...db.prepare('SELECT * FROM cobros WHERE id = ?').get(cobroId), sunat_id: sunatId };
   })
 );
 
@@ -1289,6 +1302,56 @@ app.get(
     if (!cobro) fail(404, 'Cobro no encontrado');
     const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(cobro.id).map((r) => r.id);
     return { cobro, comandas: obtenerComandas(ids) };
+  })
+);
+
+const nombreCorto = (d) => `${d.tipo === '01' ? 'factura' : 'boleta'} ${d.serie}-${d.numero}`;
+
+/** Lee el XML o ZIP subido (base64). Error 400 con un mensaje claro si no es una boleta o factura. */
+function leerXMLSubido(base64) {
+  const contenido = Buffer.from(String(base64 || ''), 'base64');
+  if (!contenido.length) fail(400, 'Elija el archivo XML o ZIP descargado de SUNAT');
+  try {
+    return { d: sunat.leerComprobante(contenido), xml: sunat.extraerXML(contenido) };
+  } catch (e) {
+    fail(400, `No se pudo leer el archivo: ${e.message}`);
+  }
+}
+
+/** Si ese comprobante ya está vinculado a un cobro, devuelve el motivo para no usarlo otra vez */
+function vinculoExistente(d) {
+  const previo = db
+    .prepare('SELECT cobro_id FROM comprobantes_sunat WHERE ruc_emisor = ? AND tipo = ? AND serie = ? AND numero = ? AND cobro_id IS NOT NULL')
+    .get(d.emisor.ruc, d.tipo, d.serie, d.numero);
+  if (!previo) return null;
+  const cobro = db.prepare(`${SQL_COBRO} WHERE co.id = ?`).get(previo.cobro_id);
+  return `La ${nombreCorto(d)} ya está registrada en otro cobro${cobro ? ` (${cobro.lugar || ''} ${cobro.comandas || ''}, ${cobro.creado_en.slice(11, 16)})` : ''}`;
+}
+
+// Vista previa del XML antes de cobrar (no guarda nada). { contenido (base64), total? }
+app.post(
+  '/api/sunat/leer',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    const { d } = leerXMLSubido(req.body?.contenido);
+    const usado = vinculoExistente(d);
+    if (usado) fail(409, usado);
+    const avisos = [];
+    if (CONFIG.ruc && d.emisor.ruc && d.emisor.ruc !== CONFIG.ruc)
+      avisos.push(`Es del RUC ${d.emisor.ruc}, distinto al del local (${CONFIG.ruc}).`);
+    if (d.fecha !== hoy()) avisos.push(`Fue emitida el ${d.fecha.split('-').reverse().join('/')}, no hoy.`);
+    const total = Number(req.body?.total);
+    return {
+      tipo: d.tipo,
+      tipoTexto: d.tipoTexto,
+      numero: `${d.serie}-${d.numero}`,
+      fecha: d.fecha,
+      cliente: { tipoDocTexto: d.cliente.tipoDocTexto, doc: /^-+$/.test(d.cliente.doc) ? '' : d.cliente.doc, nombre: /^-+$/.test(d.cliente.nombre) ? '' : d.cliente.nombre },
+      items: d.items.length,
+      total: d.totales.total,
+      coincide: Number.isFinite(total) ? Math.abs(total - d.totales.total) < 0.01 : null,
+      avisos,
+    };
   })
 );
 
