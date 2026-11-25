@@ -1209,7 +1209,7 @@ app.use((err, req, res, next) => {
 
 // ---------------- arranque ----------------
 if (sembrar()) {
-  console.log('Base de datos creada con datos de ejemplo. Usuario inicial: admin / admin123');
+  console.log('Base de datos creada con datos de ejemplo. Ingrese como "Administrador" con el PIN 1234 y cámbielo en Gestión → Usuarios.');
   try {
     const r = cargarCarta(leerCarta());
     console.log(`Carta inicial cargada: ${r.platosCreados} platos y ${r.guarnicionesCreadas} guarniciones`);
