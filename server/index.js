@@ -5,7 +5,8 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const express = require('express');
 const { db, tx, hoy, ahora, hashPassword, verificarPassword, esPin, sembrar, respaldar } = require('./db');
-const { generarPDF, ticketCocina, comprobante } = require('./pdf');
+const { generarPDF, ticketCocina, comprobante, comprobanteSunat } = require('./pdf');
+const sunat = require('./sunat');
 const { leerCarta, cargarCarta } = require('./carta-inicial');
 const { documentoESCPOS, documentoPrueba } = require('./escpos');
 const impresora = require('./impresora');
@@ -717,7 +718,9 @@ app.post(
 // ---------------- comandas ----------------
 const SQL_COMANDA = `
   SELECT c.*, COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero) AS mesa_numero, m.piso AS mesa_piso, u.nombre AS mozo_nombre, m.mozo_id AS mesa_mozo_id,
-    co.metodo AS metodo_pago,
+    co.metodo AS metodo_pago, co.comprobante AS cobro_comprobante,
+    (SELECT s.id FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_id,
+    (SELECT s.serie || '-' || s.numero FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_numero,
     (SELECT h.fecha FROM comanda_historial h WHERE h.comanda_id = c.id AND h.estado = 'enviado_cocina'
        ORDER BY h.id DESC LIMIT 1) AS enviado_en
   FROM comandas c
@@ -1165,6 +1168,7 @@ app.post(
       if (c.pagada) fail(400, `La comanda #${c.numero_dia} ya fue cobrada`);
     }
     const metodo = METODOS_PAGO.includes(req.body.metodo) ? req.body.metodo : fail(400, 'Elija la forma de pago');
+    const tipoComprobante = req.body.comprobante === 'sunat' ? 'sunat' : 'nota';
     const total = redondear(comandas.reduce((s, c) => s + c.total, 0));
     let recibido = null;
     if (metodo === 'Efectivo' && req.body.recibido !== undefined && req.body.recibido !== null && req.body.recibido !== '') {
@@ -1173,8 +1177,8 @@ app.post(
     }
     const cobroId = tx(() => {
       const id = db
-        .prepare('INSERT INTO cobros (fecha, total, metodo, recibido, usuario_id, creado_en) VALUES (?,?,?,?,?,?)')
-        .run(hoy(), total, metodo, recibido, req.user.id, ahora()).lastInsertRowid;
+        .prepare('INSERT INTO cobros (fecha, total, metodo, recibido, usuario_id, creado_en, comprobante) VALUES (?,?,?,?,?,?,?)')
+        .run(hoy(), total, metodo, recibido, req.user.id, ahora(), tipoComprobante).lastInsertRowid;
       const upd = db.prepare('UPDATE comandas SET pagada = 1, cobro_id = ?, actualizado_en = ? WHERE id = ?');
       ids.forEach((cid) => upd.run(id, ahora(), cid));
       // mesa unida sin nada pendiente: se separa sola
@@ -1237,6 +1241,163 @@ app.get(
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="comprobante-${String(id).padStart(6, '0')}.pdf"`);
     res.end(pdf);
+  })
+);
+
+// ---------------- comprobantes SUNAT (boletas y facturas emitidas en SOL) ----------------
+// Datos de un cobro para listarlo: comandas, mesa o cliente
+const SQL_COBRO = `
+  SELECT co.id, co.fecha, co.total, co.metodo, co.comprobante, co.creado_en, co.anulado,
+    (SELECT group_concat('#' || c.numero_dia, ', ') FROM comandas c WHERE c.cobro_id = co.id) AS comandas,
+    (SELECT CASE WHEN c.tipo = 'local' THEN 'Mesa ' || COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero)
+                 ELSE 'Para llevar' || CASE WHEN c.cliente <> '' THEN ' · ' || c.cliente ELSE '' END END
+       FROM comandas c LEFT JOIN mesas m ON m.id = c.mesa_id WHERE c.cobro_id = co.id LIMIT 1) AS lugar
+  FROM cobros co`;
+
+const qrDe = (d) => sunat.textoQR(d);
+
+app.get(
+  '/api/sunat',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    const fecha = esFecha(req.query.fecha) ? req.query.fecha : hoy();
+    const pendientes = db
+      .prepare(
+        `${SQL_COBRO} WHERE co.fecha = ? AND co.anulado = 0 AND co.comprobante = 'sunat'
+           AND NOT EXISTS (SELECT 1 FROM comprobantes_sunat s WHERE s.cobro_id = co.id) ORDER BY co.id DESC`
+      )
+      .all(fecha);
+    const comprobantes = db
+      .prepare(
+        `SELECT s.id, s.cobro_id, s.tipo, s.serie, s.numero, s.fecha, s.hora, s.cliente_tipo_doc, s.cliente_doc, s.cliente_nombre,
+           s.total, s.subido_en, co.anulado AS cobro_anulado,
+           (SELECT group_concat('#' || c.numero_dia, ', ') FROM comandas c WHERE c.cobro_id = s.cobro_id) AS comandas
+         FROM comprobantes_sunat s LEFT JOIN cobros co ON co.id = s.cobro_id
+         WHERE s.fecha = ? OR substr(s.subido_en, 1, 10) = ? ORDER BY s.id DESC`
+      )
+      .all(fecha, fecha);
+    return { fecha, pendientes, comprobantes, ruc: CONFIG.ruc || '' };
+  })
+);
+
+// Detalle de los platos de un cobro, para copiarlos en SOL
+app.get(
+  '/api/sunat/cobro/:id',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    const cobro = db.prepare(`${SQL_COBRO} WHERE co.id = ?`).get(Number(req.params.id));
+    if (!cobro) fail(404, 'Cobro no encontrado');
+    const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(cobro.id).map((r) => r.id);
+    return { cobro, comandas: obtenerComandas(ids) };
+  })
+);
+
+// Subir el XML (o el ZIP) descargado de SOL. { nombre, contenido (base64), cobro_id? }
+app.post(
+  '/api/sunat/xml',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    const contenido = Buffer.from(String(req.body?.contenido || ''), 'base64');
+    if (!contenido.length) fail(400, 'Elija el archivo XML descargado de SUNAT');
+    let d;
+    try {
+      d = sunat.leerComprobante(contenido);
+    } catch (e) {
+      fail(400, `No se pudo leer el archivo: ${e.message}`);
+    }
+    const avisos = [];
+    if (CONFIG.ruc && d.emisor.ruc && d.emisor.ruc !== CONFIG.ruc)
+      avisos.push(`El comprobante es del RUC ${d.emisor.ruc}, distinto al del local (${CONFIG.ruc}).`);
+    const xml = sunat.extraerXML(contenido);
+    const { comprobante: comp, repetido } = sunat.registrar(d, xml, req.user.id, ahora());
+    if (repetido) avisos.push(`El comprobante ${comp.serie}-${comp.numero} ya se había subido.`);
+
+    // vincular con el cobro: el indicado, o el único que coincide en fecha y total
+    let cobro = comp.cobro_id ? db.prepare(`${SQL_COBRO} WHERE co.id = ?`).get(comp.cobro_id) : null;
+    let candidatos = [];
+    if (!cobro) {
+      const pedido = Number(req.body?.cobro_id) || null;
+      if (pedido) {
+        cobro = db.prepare(`${SQL_COBRO} WHERE co.id = ? AND co.anulado = 0`).get(pedido);
+        if (!cobro) fail(404, 'Cobro no encontrado o anulado');
+        if (Math.abs(cobro.total - d.totales.total) >= 0.01)
+          avisos.push(`El total del comprobante (${d.totales.total.toFixed(2)}) no coincide con el cobro (${cobro.total.toFixed(2)}).`);
+      } else {
+        candidatos = sunat.candidatos(d).map((c) => db.prepare(`${SQL_COBRO} WHERE co.id = ?`).get(c.id));
+        if (candidatos.length === 1) [cobro] = candidatos;
+      }
+      if (cobro) sunat.vincular(comp.id, cobro.id);
+    }
+    if (cobro) emitir('comandas', { accion: 'sunat', cobro_id: cobro.id });
+    return {
+      comprobante: sunat.obtener(comp.id),
+      resumen: { tipo: d.tipoTexto, numero: `${d.serie}-${d.numero}`, cliente: d.cliente.nombre, total: d.totales.total },
+      repetido,
+      cobro: cobro || null,
+      candidatos: cobro ? [] : candidatos,
+      avisos,
+    };
+  })
+);
+
+app.post(
+  '/api/sunat/:id/vincular',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    const id = Number(req.params.id);
+    if (!sunat.obtener(id)) fail(404, 'Comprobante no encontrado');
+    const cobroId = Number(req.body?.cobro_id) || null;
+    if (cobroId && !db.prepare('SELECT 1 FROM cobros WHERE id = ? AND anulado = 0').get(cobroId)) fail(404, 'Cobro no encontrado o anulado');
+    const r = sunat.vincular(id, cobroId);
+    emitir('comandas', { accion: 'sunat', cobro_id: cobroId });
+    return r;
+  })
+);
+
+app.delete(
+  '/api/sunat/:id',
+  rol('admin'),
+  ruta((req) => {
+    sunat.eliminar(Number(req.params.id));
+    emitir('comandas', { accion: 'sunat' });
+    return { ok: true };
+  })
+);
+
+app.get(
+  '/api/sunat/:id/comprobante.pdf',
+  rol('admin', 'caja'),
+  ruta(async (req, res) => {
+    const d = sunat.datos(Number(req.params.id));
+    if (!d) fail(404, 'Comprobante no encontrado');
+    const pdf = await generarPDF([comprobanteSunat(d, CONFIG, qrDe(d))], `${d.serie}-${d.numero}`);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${d.serie}-${d.numero}.pdf"`);
+    res.end(pdf);
+  })
+);
+
+app.get(
+  '/api/sunat/:id/xml',
+  rol('admin', 'caja'),
+  ruta((req, res) => {
+    const f = sunat.rutaXML(Number(req.params.id));
+    if (!f || !fs.existsSync(f)) fail(404, 'Archivo no encontrado');
+    res.download(f);
+  })
+);
+
+// Imprimir el comprobante SUNAT en la ticketera. { id }
+app.post(
+  '/api/imprimir/sunat',
+  rol('admin', 'caja'),
+  ruta((req) => {
+    exigirTicketera();
+    const d = sunat.datos(Number(req.body?.id));
+    if (!d) fail(404, 'Comprobante no encontrado');
+    impresora.encolar('comprobante', Number(req.body.id), `${d.tipo === '01' ? 'Factura' : 'Boleta'} ${d.serie}-${d.numero}`,
+      documentoESCPOS([comprobanteSunat(d, CONFIG, qrDe(d))], opcionesTicketera()));
+    return { ok: true };
   })
 );
 

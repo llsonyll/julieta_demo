@@ -197,6 +197,21 @@ function documentoESCPOS(paginas, opciones = {}) {
         cmd(0x0a);
         continue;
       }
+      if (b.t === 'qr') {
+        // QR como imagen de puntos (funciona en cualquier térmica, tenga o no QR propio)
+        const escala = Math.max(2, Math.floor(Math.round(anchoPuntos * (b.ancho / ANCHO_UTIL_PT)) / b.tam));
+        const lado = b.tam * escala;
+        const ancho = (lado + 7) & ~7;
+        const bytesFila = ancho / 8;
+        const datos = Buffer.alloc(bytesFila * lado);
+        for (let y = 0; y < lado; y++)
+          for (let x = 0; x < lado; x++)
+            if (b.modulos[Math.floor(y / escala) * b.tam + Math.floor(x / escala)]) datos[y * bytesFila + (x >> 3)] |= 0x80 >> (x & 7);
+        cmd(ESC, 0x61, 1);
+        out.push(GS, 0x76, 0x30, 0, bytesFila & 0xff, bytesFila >> 8, lado & 0xff, lado >> 8, ...datos);
+        cmd(0x0a, ESC, 0x61, 0);
+        continue;
+      }
       if (b.t === 'imagen') {
         const logo = opciones.logo !== false ? logoPuntos(Math.round(anchoPuntos * (b.ancho / ANCHO_UTIL_PT))) : null;
         if (logo) {

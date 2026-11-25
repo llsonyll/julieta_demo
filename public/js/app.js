@@ -38,9 +38,9 @@ const ESTADO_TXT = {
 const claseEstado = (e) => (EN_COCINA.includes(e) ? 'enviado_cocina' : e);
 const ROL_TXT = { admin: 'Administrador', mozo: 'Mozo', caja: 'Caja', cocina: 'Cocina' };
 const TABS = {
-  admin: ['mesas', 'comandas', 'tickets', 'carta', 'reporte', 'admin'],
+  admin: ['mesas', 'comandas', 'tickets', 'comprobantes', 'carta', 'reporte', 'admin'],
   mozo: ['mesas', 'comandas', 'carta'],
-  caja: ['mesas', 'comandas', 'tickets', 'reporte'],
+  caja: ['mesas', 'comandas', 'tickets', 'comprobantes', 'reporte'],
   cocina: ['tickets', 'carta'],
 };
 // [texto, grupo, icono (trazos SVG estilo lucide)]
@@ -48,6 +48,7 @@ const TAB_INFO = {
   mesas: ['Salón', 'Operaciones', '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>'],
   comandas: ['Pedidos / Comandas', 'Operaciones', '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M12 11h4M12 16h4M8 11h.01M8 16h.01"/>'],
   tickets: ['Cocina', 'Operaciones', '<path d="M17 21a1 1 0 0 0 1-1v-5.35c0-.46.32-.84.73-1.04a4 4 0 0 0-2.14-7.59 5 5 0 0 0-9.18 0 4 4 0 0 0-2.14 7.59c.41.2.73.58.73 1.04V20a1 1 0 0 0 1 1ZM6 17h12"/>'],
+  comprobantes: ['Comprobantes SUNAT', 'Operaciones', '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 15l2 2 4-4"/>'],
   carta: ['Cartas', 'Catálogos', '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>'],
   reporte: ['Reportes', 'Análisis', '<path d="M3 3v18h18M8 17V9M13 17V5M18 17v-3"/>'],
   admin: ['Configuración', 'Sistema', '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'],
@@ -556,6 +557,7 @@ const VISTAS = {
   mesas: { roles: ['admin', 'mozo', 'caja'], fn: vMesas, escucha: ['mesas', 'comandas'] },
   carta: { roles: ['admin', 'mozo', 'cocina', 'caja'], fn: vCarta, escucha: ['productos'] },
   reporte: { roles: ['admin', 'caja'], fn: vReporte, escucha: ['comandas', 'turnos'] },
+  comprobantes: { roles: ['admin', 'caja'], fn: vComprobantes, escucha: ['comandas'] },
   admin: { roles: ['admin'], fn: vAdmin, escucha: ['mesas', 'productos', 'turnos'] },
 };
 
@@ -659,6 +661,13 @@ function abrirCobro(comandas, titulo) {
       <div class="fila entre"><h3>${esc(titulo)}</h3><button class="btn chico" data-x>✕</button></div>
       <div class="suave">${comandas.map((c) => `#${c.numero_dia}`).join(', ')}</div>
       <div class="total-cobro">${dinero(total)}</div>
+      <div><div class="etiqueta-campo">Comprobante</div>
+        <div class="segmento" id="tipo-comprobante">
+          <button type="button" data-comp="nota" class="activo">🧾 Nota de venta</button>
+          <button type="button" data-comp="sunat">🏛️ Boleta o factura (SUNAT)</button>
+        </div></div>
+      <div id="aviso-sunat" class="aviso-suave oculto">Se cobra sin imprimir. Emita la boleta o factura en SOL con estos datos,
+        descargue el XML y súbalo en <b>Comprobantes SUNAT</b>: se imprimirá desde ahí.</div>
       <button type="button" class="btn bloque" id="ver-sunat">📋 Detalle para boleta SUNAT</button>
       <div id="sunat" class="pila oculto">${detalleSunat(comandas, total)}</div>
       <div><div class="etiqueta-campo">Forma de pago</div>
@@ -667,10 +676,22 @@ function abrirCobro(comandas, titulo) {
         <input type="number" inputmode="decimal" step="0.1" min="0" id="recibido" placeholder="${Number(total).toFixed(2)}"></label>
       <div class="suave" id="vuelto"></div>
       <div class="error" data-err></div>
-      <button class="btn acento bloque" id="cobrar">💵 Cobrar e imprimir comprobante</button>
+      <button class="btn acento bloque" id="cobrar">💵 Cobrar e imprimir nota de venta</button>
     </div>`);
   $('[data-x]', m).onclick = cerrarModal;
   $('#ver-sunat', m).onclick = () => $('#sunat', m).classList.toggle('oculto');
+  let tipoComprobante = 'nota';
+  $$('[data-comp]', m).forEach(
+    (b) =>
+      (b.onclick = () => {
+        tipoComprobante = b.dataset.comp;
+        $$('[data-comp]', m).forEach((x) => x.classList.toggle('activo', x === b));
+        const sunat = tipoComprobante === 'sunat';
+        $('#aviso-sunat', m).classList.toggle('oculto', !sunat);
+        $('#sunat', m).classList.toggle('oculto', !sunat);
+        $('#cobrar', m).textContent = sunat ? '💵 Cobrar (comprobante en SOL)' : '💵 Cobrar e imprimir nota de venta';
+      })
+  );
   $$('[data-copiar]', m).forEach((b) => (b.onclick = () => copiar(b.dataset.copiar)));
   const recibido = $('#recibido', m);
   const vuelto = () => {
@@ -689,14 +710,19 @@ function abrirCobro(comandas, titulo) {
   );
   $('#cobrar', m).onclick = async (e) => {
     e.target.disabled = true;
-    const ventana = usaTicketeraCaja() ? null : prepararVentana();
+    const ventana = usaTicketeraCaja() || tipoComprobante === 'sunat' ? null : prepararVentana();
     try {
       const cobro = await api('POST', '/api/cobros', {
         comanda_ids: comandas.map((c) => c.id),
+        comprobante: tipoComprobante,
         metodo,
         recibido: metodo === 'Efectivo' && recibido.value !== '' ? Number(recibido.value) : null,
       });
       cerrarModal();
+      if (tipoComprobante === 'sunat') {
+        toast(`Cobro registrado (${metodo}). Emita el comprobante en SOL y suba el XML en Comprobantes SUNAT.`, 'ok', 6000);
+        return recargarVista();
+      }
       toast(`Cobro registrado (${metodo})`, 'ok');
       if (usaTicketeraCaja()) aTicketera('/api/imprimir/comprobante', { cobro_id: cobro.id }, 'Comprobante enviado a la ticketera');
       else imprimirPDF(`/api/cobros/${cobro.id}/comprobante.pdf`, ventana);
@@ -780,6 +806,8 @@ const ACCIONES = {
     usaTicketeraCaja()
       ? aTicketera('/api/imprimir/comprobante', { cobro_id: Number(el.dataset.cobro) }, 'Comprobante enviado a la ticketera')
       : imprimirPDF(`/api/cobros/${el.dataset.cobro}/comprobante.pdf`),
+  'imprimir-sunat': (el) => imprimirSunat(Number(el.dataset.id)),
+  'ir-comprobantes': () => ir('#/comprobantes'),
   'comprobante-pdf': (el) => imprimirPDF(`/api/cobros/${el.dataset.cobro}/comprobante.pdf`),
   'anular-cobro': async (el) => {
     if (!(await confirmar('¿Anular este cobro? Las comandas quedarán como no pagadas.', { ok: 'Anular cobro', peligro: true }))) return;
@@ -933,8 +961,14 @@ async function vComandaDetalle(main, r) {
   if (EN_COCINA.includes(c.estado) || c.estado === 'entregado')
     if (['admin', 'caja', 'cocina'].includes(rol))
       acciones.push(`<button class="btn chico" data-accion="imprimir-ticket" data-ids="${c.id}">🖨️ ${c.ticket_impreso ? 'Reimprimir' : 'Imprimir'} ticket</button>`);
+  if (c.pagada && c.cobro_comprobante === 'sunat' && ['admin', 'caja'].includes(rol))
+    acciones.push(
+      c.sunat_id
+        ? `<button class="btn chico primario" data-accion="imprimir-sunat" data-id="${c.sunat_id}">🏛️ ${esc(c.sunat_numero)}</button>`
+        : `<button class="btn chico acento" data-accion="ir-comprobantes">🏛️ Falta subir el XML de SUNAT</button>`
+    );
   if (c.pagada && c.cobro_id && ['admin', 'caja'].includes(rol)) {
-    acciones.push(`<button class="btn chico" data-accion="comprobante" data-cobro="${c.cobro_id}">🧾 ${usaTicketeraCaja() ? 'Imprimir comprobante' : 'Comprobante'}</button>`);
+    acciones.push(`<button class="btn chico" data-accion="comprobante" data-cobro="${c.cobro_id}">🧾 Nota de venta</button>`);
     if (usaTicketeraCaja()) acciones.push(`<button class="btn chico" data-accion="comprobante-pdf" data-cobro="${c.cobro_id}">PDF</button>`);
     acciones.push(`<button class="btn chico" data-accion="anular-cobro" data-cobro="${c.cobro_id}">Anular cobro</button>`);
   }
@@ -1483,6 +1517,194 @@ function enlazarPanelTicketera(cont) {
       (x.onclick = async () => {
         if (!(await confirmar('¿Quitar este ticket de la cola? No se imprimirá.', { ok: 'Quitar', peligro: true }))) return;
         api('POST', '/api/impresora/cancelar', { id: Number(x.dataset.tqCancelar) }).catch((e) => toast(e.message, 'error'));
+      })
+  );
+}
+
+// ---------- Comprobantes SUNAT ----------
+// Flujo: se cobra como "boleta o factura", se emite en SOL, se descarga el XML y se sube aquí:
+// el sistema lo vincula con su cobro y lo imprime.
+function imprimirSunat(id) {
+  if (usaTicketeraCaja()) return aTicketera('/api/imprimir/sunat', { id }, 'Comprobante enviado a la ticketera');
+  imprimirPDF(`/api/sunat/${id}/comprobante.pdf`);
+}
+
+/** Después de subir un XML sin gesto del usuario: con ticketera o Chrome se imprime solo; si no, se ofrece abrir el PDF */
+function imprimirTrasSubir(comp) {
+  if (usaTicketeraCaja() || imprimeDirecto()) return imprimirSunat(comp.id);
+  const m = abrirModal(`<div class="pila"><h3>${esc(comp.serie)}-${esc(comp.numero)} listo</h3>
+    <button class="btn primario bloque" id="abrir-pdf">🖨️ Abrir para imprimir</button>
+    <button class="btn bloque" data-x>Cerrar</button></div>`);
+  $('#abrir-pdf', m).onclick = () => (cerrarModal(), imprimirPDF(`/api/sunat/${comp.id}/comprobante.pdf`));
+  $('[data-x]', m).onclick = cerrarModal;
+}
+
+const leerArchivo = (f) =>
+  new Promise((ok, mal) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result).split(',')[1] || '');
+    r.onerror = () => mal(new Error('No se pudo leer el archivo'));
+    r.readAsDataURL(f);
+  });
+
+async function subirXML(archivo, cobroId) {
+  if (!archivo) return;
+  if (archivo.size > 700 * 1024) return toast('El archivo es demasiado grande para ser un XML de SUNAT', 'error');
+  try {
+    const r = await api('POST', '/api/sunat/xml', { nombre: archivo.name, contenido: await leerArchivo(archivo), cobro_id: cobroId || null });
+    r.avisos.forEach((a) => toast(`⚠️ ${a}`, 'error', 7000));
+    const nombre = `${r.resumen.tipo.toLowerCase().startsWith('factura') ? 'Factura' : 'Boleta'} ${r.resumen.numero}`;
+    if (r.cobro) {
+      toast(`✅ ${nombre} vinculada a ${r.cobro.lugar || 'su cobro'} (${r.cobro.comandas || ''})`, 'ok', 4000);
+      imprimirTrasSubir(r.comprobante);
+    } else if (r.candidatos.length) elegirCobro(r.comprobante, r.candidatos, nombre);
+    else {
+      toast(`${nombre} guardada, pero no hay un cobro pendiente con el mismo total (${dinero(r.resumen.total)}). Puede vincularla después.`, 'error', 7000);
+      imprimirTrasSubir(r.comprobante);
+    }
+    recargarVista();
+  } catch (e) {
+    toast(e.message, 'error', 6000);
+  }
+}
+
+/** Varios cobros con el mismo total: el usuario elige a cuál corresponde */
+function elegirCobro(comp, candidatos, nombre) {
+  const m = abrirModal(`<div class="pila">
+    <h3>¿A qué cobro corresponde la ${esc(nombre)}?</h3>
+    <div class="suave">Hay ${candidatos.length} cobros pendientes con el mismo total.</div>
+    ${candidatos
+      .map((c) => `<button class="btn bloque" data-cobro="${c.id}">${esc(c.lugar || 'Cobro')} · ${esc(c.comandas || '')} · ${hora(c.creado_en)} · ${dinero(c.total)}</button>`)
+      .join('')}
+    <button class="btn bloque" data-cobro="">Ninguno (solo imprimir)</button></div>`);
+  $$('[data-cobro]', m).forEach(
+    (b) =>
+      (b.onclick = async () => {
+        cerrarModal();
+        try {
+          if (b.dataset.cobro) await api('POST', `/api/sunat/${comp.id}/vincular`, { cobro_id: Number(b.dataset.cobro) });
+          imprimirTrasSubir(comp);
+          recargarVista();
+        } catch (e) {
+          toast(e.message, 'error');
+        }
+      })
+  );
+}
+
+async function vComprobantes(main) {
+  const fecha = S.fechaComprobantes || fechaHoy();
+  const r = await api('GET', `/api/sunat?fecha=${fecha}`);
+  const tipoTxt = (t) => (t === '01' ? 'Factura' : 'Boleta');
+  const docTxt = { 1: 'DNI', 6: 'RUC', 4: 'C.E.', 7: 'Pas.' };
+  main.innerHTML = `
+    <div class="pila">
+      <div class="fila entre envolver"><h2>Comprobantes SUNAT</h2>
+        <input type="date" class="entrada" id="fecha" value="${fecha}" max="${fechaHoy()}" style="width:auto"></div>
+      <label class="tarjeta zona-xml" id="zona-xml">
+        <input type="file" accept=".xml,.zip,text/xml,application/xml,application/zip" id="archivo-xml" hidden>
+        <b>⬆️ Subir XML descargado de SUNAT</b>
+        <span class="suave peq">Toque aquí o arrastre el archivo (.xml o .zip). Se vincula solo con su cobro y se imprime.</span>
+      </label>
+
+      <h3>Pendientes de comprobante (${r.pendientes.length})</h3>
+      ${
+        r.pendientes.length
+          ? `<div class="grid">${r.pendientes
+              .map(
+                (c) => `<div class="tarjeta pila">
+                  <div class="fila entre"><b>${esc(c.lugar || 'Cobro')}</b><b>${dinero(c.total)}</b></div>
+                  <div class="suave peq">Comandas ${esc(c.comandas || '-')} · ${esc(c.metodo)} · cobrado ${hora(c.creado_en)}</div>
+                  <div class="fila">
+                    <button class="btn chico crecer" data-datos-sol="${c.id}">📋 Datos para SOL</button>
+                    <button class="btn chico primario crecer" data-subir="${c.id}">⬆️ Subir XML</button>
+                  </div></div>`
+              )
+              .join('')}</div>`
+          : '<div class="suave">No hay cobros esperando boleta o factura.</div>'
+      }
+
+      <h3>Emitidos (${r.comprobantes.length})</h3>
+      ${
+        r.comprobantes.length
+          ? `<div class="tarjeta"><ul class="cola-impresion">${r.comprobantes
+              .map(
+                (c) => `<li><span><b>${tipoTxt(c.tipo)} ${esc(c.serie)}-${esc(c.numero)}</b> · ${dinero(c.total)}
+                  <small class="suave">${c.cliente_doc && c.cliente_doc !== '-' ? `${docTxt[c.cliente_tipo_doc] || 'Doc.'} ${esc(c.cliente_doc)} · ` : ''}${esc(c.cliente_nombre || '')}
+                  · ${c.cobro_id ? `comandas ${esc(c.comandas || '')}${c.cobro_anulado ? ' (cobro anulado)' : ''}` : '<b>sin vincular a un cobro</b>'}</small></span>
+                  <span class="fila">
+                    ${c.cobro_id ? '' : `<button class="btn chico" data-vincular="${c.id}" data-total="${c.total}">Vincular</button>`}
+                    <button class="btn chico primario" data-accion="imprimir-sunat" data-id="${c.id}">Imprimir</button>
+                    <a class="btn chico" href="/api/sunat/${c.id}/comprobante.pdf" target="_blank" rel="noopener">PDF</a>
+                    <a class="btn chico" href="/api/sunat/${c.id}/xml">XML</a>
+                    ${puede('admin') ? `<button class="btn chico peligro" data-borrar="${c.id}" aria-label="Eliminar">🗑</button>` : ''}
+                  </span></li>`
+              )
+              .join('')}</ul></div>`
+          : '<div class="suave">Todavía no se subió ningún comprobante este día.</div>'
+      }
+    </div>`;
+
+  $('#fecha', main).onchange = (e) => {
+    S.fechaComprobantes = e.target.value || null;
+    vComprobantes(main);
+  };
+  const input = $('#archivo-xml', main);
+  let destino = null; // cobro al que se sube el XML (si se eligió uno)
+  input.onchange = () => {
+    subirXML(input.files[0], destino);
+    input.value = '';
+    destino = null;
+  };
+  const zona = $('#zona-xml', main);
+  zona.ondragover = (e) => (e.preventDefault(), zona.classList.add('encima'));
+  zona.ondragleave = () => zona.classList.remove('encima');
+  zona.ondrop = (e) => {
+    e.preventDefault();
+    zona.classList.remove('encima');
+    subirXML(e.dataTransfer.files[0], null);
+  };
+  $$('[data-subir]', main).forEach(
+    (b) =>
+      (b.onclick = () => {
+        destino = Number(b.dataset.subir);
+        input.click();
+      })
+  );
+  $$('[data-datos-sol]', main).forEach(
+    (b) =>
+      (b.onclick = async () => {
+        try {
+          const { cobro, comandas } = await api('GET', `/api/sunat/cobro/${b.dataset.datosSol}`);
+          const m = abrirModal(`<div class="pila">
+            <div class="fila entre"><h3>Datos para SOL · ${esc(cobro.lugar || '')}</h3><button class="btn chico" data-x>✕</button></div>
+            ${detalleSunat(comandas, cobro.total)}</div>`);
+          $('[data-x]', m).onclick = cerrarModal;
+          $$('[data-copiar]', m).forEach((x) => (x.onclick = () => copiar(x.dataset.copiar)));
+        } catch (e) {
+          toast(e.message, 'error');
+        }
+      })
+  );
+  $$('[data-vincular]', main).forEach(
+    (b) =>
+      (b.onclick = () => {
+        const cands = r.pendientes.filter((p) => Math.abs(p.total - Number(b.dataset.total)) < 0.01);
+        const lista = cands.length ? cands : r.pendientes;
+        if (!lista.length) return toast('No hay cobros pendientes de comprobante este día', 'error');
+        elegirCobro({ id: Number(b.dataset.vincular) }, lista, 'comprobante');
+      })
+  );
+  $$('[data-borrar]', main).forEach(
+    (b) =>
+      (b.onclick = async () => {
+        if (!(await confirmar('¿Eliminar este comprobante del sistema? (No lo anula en SUNAT)', { ok: 'Eliminar', peligro: true }))) return;
+        try {
+          await api('DELETE', `/api/sunat/${b.dataset.borrar}`);
+          recargarVista();
+        } catch (e) {
+          toast(e.message, 'error');
+        }
       })
   );
 }

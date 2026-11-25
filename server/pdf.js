@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const PDFDocument = require('pdfkit');
+const QRCode = require('qrcode');
 
 const ANCHO = 226.77; // 80 mm en puntos
 const MARGEN = 12;
@@ -23,6 +24,7 @@ function alto(doc, b) {
   if (b.t === 'espacio') return b.alto;
   if (b.t === 'linea') return 10;
   if (b.t === 'imagen') return b.alto + 6;
+  if (b.t === 'qr') return b.ancho + 8;
   fuente(doc, b);
   if (b.t === 'fila') {
     const anchoDer = doc.widthOfString(b.der);
@@ -37,6 +39,13 @@ function dibujar(doc, bloques, medidor) {
     const h = alto(medidor, b);
     if (b.t === 'imagen') {
       doc.image(b.src, (ANCHO - b.ancho) / 2, y, { width: b.ancho });
+    } else if (b.t === 'qr') {
+      const m = b.ancho / b.tam;
+      const x0 = (ANCHO - b.ancho) / 2;
+      doc.save().fillColor('#000');
+      for (let r = 0; r < b.tam; r++)
+        for (let c = 0; c < b.tam; c++) if (b.modulos[r * b.tam + c]) doc.rect(x0 + c * m, y + 4 + r * m, m, m);
+      doc.fill().restore();
     } else if (b.t === 'linea') {
       doc.save().moveTo(MARGEN, y + 5).lineTo(ANCHO - MARGEN, y + 5).lineWidth(0.8).dash(2, { space: 2 }).stroke().restore();
     } else if (b.t === 'fila') {
@@ -78,6 +87,11 @@ const espacio = (a = 4) => ({ t: 'espacio', alto: a });
 const fila = (izq, der, tam = 10, negrita = false) => ({ t: 'fila', izq: String(izq), der: String(der), tam, negrita });
 // Alto según las proporciones del PNG (ancho y alto están en los bytes 16-23 de la cabecera)
 const imagen = (src, ancho) => ({ t: 'imagen', src, ancho, alto: (ancho * src.readUInt32BE(20)) / src.readUInt32BE(16) });
+// Código QR: se guarda la matriz de módulos (la usan el PDF y la ticketera)
+function qr(texto, ancho = 110) {
+  const q = QRCode.create(texto, { errorCorrectionLevel: 'M' });
+  return { t: 'qr', ancho, tam: q.modules.size, modulos: Array.from(q.modules.data, (v) => (v ? 1 : 0)) };
+}
 
 function lineasGuarnicion(it) {
   const r = [];
@@ -158,4 +172,52 @@ function comprobante({ cobro, comandas, config, cajero, ahora }) {
   return b;
 }
 
-module.exports = { generarPDF, ticketCocina, comprobante };
+/** Representación impresa de una boleta o factura electrónica emitida en SUNAT (datos leídos del XML) */
+function comprobanteSunat(d, config, qrTexto) {
+  const simbolo = d.moneda === 'PEN' ? 'S/' : d.moneda === 'USD' ? 'US$' : d.moneda;
+  const dinero = (n) => `${simbolo} ${Number(n || 0).toFixed(2)}`;
+  const t = d.totales;
+  const b = [];
+  if (LOGO) b.push(imagen(LOGO, ANCHO_LOGO));
+  b.push(centro(d.emisor.razonSocial || config.nombreRestaurante, 10, true));
+  if (d.emisor.nombreComercial && d.emisor.nombreComercial !== d.emisor.razonSocial) b.push(centro(d.emisor.nombreComercial, 9));
+  b.push(centro(`RUC ${d.emisor.ruc}`, 10, true));
+  if (d.emisor.direccion) b.push(centro(d.emisor.direccion, 8));
+  b.push(linea(), centro(d.tipoTexto, 11, true), centro(`${d.serie}-${d.numero}`, 14, true), linea());
+
+  b.push(texto(`Fecha de emisión: ${d.fecha.split('-').reverse().join('/')}${d.hora ? `  ${d.hora.slice(0, 5)}` : ''}`, 9));
+  const docCliente = d.cliente.doc && !/^-+$/.test(d.cliente.doc) ? d.cliente.doc : '';
+  if (d.tipo === '01') {
+    b.push(texto(`RUC: ${docCliente}`, 9), texto(`Razón social: ${d.cliente.nombre}`, 9));
+    if (d.cliente.direccion) b.push(texto(`Dirección: ${d.cliente.direccion}`, 9));
+  } else {
+    if (docCliente) b.push(texto(`${d.cliente.tipoDocTexto || 'Doc.'}: ${docCliente}`, 9));
+    if (d.cliente.nombre && !/^-+$/.test(d.cliente.nombre)) b.push(texto(`Cliente: ${d.cliente.nombre}`, 9));
+  }
+  if (d.formaPago) b.push(texto(`Forma de pago: ${d.formaPago}`, 9));
+  b.push(linea(), fila('Cant. Descripción', 'Importe', 9, true), espacio(2));
+  for (const it of d.items) {
+    const cant = Number.isInteger(it.cantidad) ? it.cantidad : it.cantidad.toFixed(2);
+    b.push(fila(`${cant} x ${it.descripcion}`, dinero(it.importe), 10));
+    if (it.cantidad !== 1) b.push(texto(`P. unit. ${dinero(it.precioUnitario)}`, 8, { sangria: 14, sep: 3 }));
+  }
+  b.push(linea());
+  const porcentaje = d.items.find((i) => i.porcentaje)?.porcentaje;
+  if (t.gravada) b.push(fila('Op. gravada', dinero(t.gravada), 9));
+  if (t.exonerada) b.push(fila('Op. exonerada', dinero(t.exonerada), 9));
+  if (t.inafecta) b.push(fila('Op. inafecta', dinero(t.inafecta), 9));
+  if (t.gratuita) b.push(fila('Op. gratuita', dinero(t.gratuita), 9));
+  if (t.descuentos) b.push(fila('Descuentos', dinero(t.descuentos), 9));
+  b.push(fila(`IGV${porcentaje ? ` (${porcentaje}%)` : ''}`, dinero(t.igv), 9));
+  if (t.icbper) b.push(fila('ICBPER', dinero(t.icbper), 9));
+  b.push(fila('IMPORTE TOTAL', dinero(t.total), 13, true), espacio(3));
+  if (d.letras) b.push(texto(`SON: ${d.letras}`, 8));
+  b.push(espacio(4), qr(qrTexto));
+  if (d.hash) b.push(centro(`Resumen: ${d.hash}`, 7));
+  b.push(centro(`Representación impresa de la ${d.tipoTexto.toLowerCase()}.`, 8));
+  b.push(centro('Puede consultar su validez en www.sunat.gob.pe', 8));
+  if (config.pieComprobante) b.push(linea(), centro(config.pieComprobante, 10, true));
+  return b;
+}
+
+module.exports = { generarPDF, ticketCocina, comprobante, comprobanteSunat };

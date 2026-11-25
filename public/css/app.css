@@ -527,3 +527,8 @@ main:has(.editor) { max-width: none; padding-bottom: 16px; }
 .cola-impresion li small { display: block; }
 .cola-impresion li.error span { color: var(--peligro, #c43d3d); }
 .cola-impresion li.impreso, .cola-impresion li.cancelado { opacity: .65; }
+
+/* ---------- comprobantes SUNAT ---------- */
+.zona-xml { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; cursor: pointer;
+  border: 2px dashed var(--borde, #cfd6e1); padding: 22px 16px; }
+.zona-xml.encima, .zona-xml:hover { border-color: var(--primario, #1f3a5f); background: #f3f7fb; }
