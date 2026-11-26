@@ -2249,14 +2249,14 @@ async function vReporte(main) {
 
 // ---------- Gestión (admin) ----------
 async function vAdmin(main) {
-  const tabs = [['carta', '📅 Carta del día'], ['platos', '🍲 Platos'], ['guarniciones', '🥗 Guarniciones'], ['mesas', '🍽️ Mesas'], ['usuarios', '👤 Usuarios'], ['impresora', '🖨️ Impresora']];
+  const tabs = [['carta', '📅 Carta del día'], ['platos', '🍲 Platos'], ['guarniciones', '🥗 Guarniciones'], ['mesas', '🍽️ Mesas'], ['usuarios', '👤 Usuarios'], ['impresora', '🖨️ Impresora'], ['config', '⚙️ Configuración']];
   main.innerHTML = `<div class="pila">${chips(tabs, S.adminTab, 'at')}<div id="admin-cont"></div></div>`;
   enlazarChips(main, 'at', (v) => {
     S.adminTab = v;
     vAdmin(main);
   });
   const cont = $('#admin-cont', main);
-  await { carta: adminCarta, platos: adminPlatos, guarniciones: adminGuarniciones, mesas: adminMesas, usuarios: adminUsuarios, impresora: adminImpresora }[S.adminTab](cont);
+  await { carta: adminCarta, platos: adminPlatos, guarniciones: adminGuarniciones, mesas: adminMesas, usuarios: adminUsuarios, impresora: adminImpresora, config: adminConfiguracion }[S.adminTab](cont);
 }
 
 /** Gestión → Impresora: conexión de la ticketera térmica y qué imprime */
@@ -2451,27 +2451,46 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
   ajustar();
 }
 
-/** Carta del día: marcar qué platos y guarniciones salen */
+/** Carta del día: qué platos y guarniciones salen */
 async function adminCarta(cont) {
   const fecha = S.fechaCarta || fechaHoy();
   const carta = await api('GET', `/api/carta?fecha=${fecha}&completo=1`);
   const menu = carta.menu.filter((p) => p.activo);
   const fijos = menu.filter((p) => p.menu_rol === 'fijo');
-  const variables = menu.filter((p) => p.menu_rol !== 'fijo');
+  const variablesDelDia = menu.filter((p) => p.menu_rol !== 'fijo' && p.en_carta);
+  const variablesDisponibles = menu.filter((p) => p.menu_rol !== 'fijo' && !p.en_carta);
   const sopas = carta.sopas.filter((p) => p.activo);
   const delDia = carta.guarniciones.filter((g) => g.activo && g.del_dia);
   const esHoy = fecha === fechaHoy();
-  // los segundos fijos no se marcan: salen todos los días que hay menú
-  const filaMenu = (p) => `
-    <div class="toggle-fila ${p.en_carta ? 'on' : ''}">
-      ${p.menu_rol === 'fijo' ? '' : `<button class="toggle" data-menu="${p.id}" data-v="${p.en_carta ? 0 : 1}" aria-pressed="${p.en_carta ? 'true' : 'false'}">${p.en_carta ? '✓' : ''}</button>`}
-      <div class="crecer" ${p.menu_rol === 'fijo' ? '' : `data-menu-txt="${p.id}"`}>
+
+  const infoGuar = (p) => [p.guarnicion_base ? `con ${esc(p.guarnicion_base.toLowerCase())}` : '', p.con_eleccion ? '+ a elección' : '', esc(p.descripcion)].filter(Boolean).join(' ') || '&nbsp;';
+
+  // Fila de segundo fijo: sin toggle, siempre activo
+  const filaFijo = (p) => `
+    <div class="toggle-fila on">
+      <div class="crecer">
         <div class="nombre">${esc(p.nombre)} ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''}</div>
-        <div class="suave peq">${[p.guarnicion_base ? `con ${esc(p.guarnicion_base.toLowerCase())}` : '', p.con_eleccion ? '+ a elección' : '', esc(p.descripcion)].filter(Boolean).join(' ') || '&nbsp;'}</div>
+        <div class="suave peq">${infoGuar(p)}</div>
       </div>
-      ${p.en_carta ? `<button class="btn chico ${p.disponible ? '' : 'ok'}" data-accion="disponible" data-id="${p.id}" data-v="${p.disponible ? 0 : 1}">${p.disponible ? 'Agotar' : 'Hay'}</button>` : ''}
+      <button class="btn chico ${p.disponible ? '' : 'ok'}" data-accion="disponible" data-id="${p.id}" data-v="${p.disponible ? 0 : 1}">${p.disponible ? 'Agotar' : 'Hay'}</button>
       <button class="btn chico" data-editar-plato="${p.id}" aria-label="Editar">✏️</button>
     </div>`;
+
+  // Fila de segundo variable en el día: botón para quitar
+  const filaVariable = (p) => `
+    <div class="toggle-fila on">
+      <div class="crecer">
+        <div class="nombre">${esc(p.nombre)} ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''}</div>
+        <div class="suave peq">${infoGuar(p)}</div>
+      </div>
+      <button class="btn chico ${p.disponible ? '' : 'ok'}" data-accion="disponible" data-id="${p.id}" data-v="${p.disponible ? 0 : 1}">${p.disponible ? 'Agotar' : 'Hay'}</button>
+      <button class="btn chico" data-menu="${p.id}" data-v="0" aria-label="Quitar del día">✕ Quitar</button>
+    </div>`;
+
+  const opcionesSopa = sopas
+    .map((s) => `<option value="${s.id}" ${carta.sopa?.id === s.id ? 'selected' : ''}>${esc(s.nombre)}</option>`)
+    .join('');
+
   cont.innerHTML = `
     <div class="pila">
       <div class="tarjeta fila entre envolver">
@@ -2479,20 +2498,35 @@ async function adminCarta(cont) {
           <span class="suave">${esHoy ? 'Hoy' : ''}</span></div>
         <button class="btn chico" id="copiar">📋 Copiar carta del día anterior</button>
       </div>
+
       <div class="tarjeta pila">
-        <div class="fila entre envolver"><h3>📅 Menú de este día</h3>
-          <form class="fila" id="form-precio-menu"><span>Precio del menú</span>
-            <input class="entrada" name="precio" type="number" step="0.10" min="0" inputmode="decimal" value="${carta.precio_menu || ''}" style="width:100px" required>
-            <button class="btn chico">Guardar</button></form></div>
-        <p class="suave peq">El menú es una sopa + un segundo a elección, siempre al mismo precio. Los platos se crean una sola vez y se reutilizan.</p>
-        <div class="fila entre"><h4>🍲 Sopa del día</h4><button class="btn chico" data-nuevo-menu="sopa">＋ Sopa</button></div>
-        ${carta.sopa ? '' : '<div class="error">Sin sopa elegida este día no hay menú.</div>'}
-        ${sopas.map(filaMenu).join('') || '<div class="suave">Aún no hay sopas. Cree la primera.</div>'}
-        <div class="fila entre"><h4>📌 Segundos fijos (salen todos los días con menú)</h4><button class="btn chico" data-nuevo-menu="fijo">＋ Fijo</button></div>
-        ${fijos.map(filaMenu).join('') || '<div class="suave">Sin segundos fijos.</div>'}
-        <div class="fila entre"><h4>🔄 Segundos variables (marque los de este día)</h4><button class="btn chico" data-nuevo-menu="variable">＋ Variable</button></div>
-        ${variables.map(filaMenu).join('') || '<div class="suave">Sin segundos variables.</div>'}
+        <h3>📅 Menú del día</h3>
+        <p class="suave peq">El menú es una sopa + un segundo a elección, siempre al mismo precio. El precio se configura en la pestaña Configuración.</p>
+
+        <div class="fila entre"><h4>🍲 Sopa del día</h4><button class="btn chico" data-nuevo-menu="sopa">＋ Nueva sopa</button></div>
+        <div class="fila entre envolver" style="gap:8px;align-items:center">
+          <div>
+            ${carta.sopa
+              ? `<div class="nombre">${esc(carta.sopa.nombre)}</div>`
+              : `<div class="suave">Sin sopa — el menú no estará disponible este día.</div>`}
+          </div>
+          ${sopas.length ? `<select class="entrada" id="sel-sopa" style="width:auto">
+            <option value="">— ${carta.sopa ? 'Cambiar sopa' : 'Elegir sopa'} —</option>
+            ${opcionesSopa}
+          </select>` : ''}
+        </div>
+
+        <div class="fila entre"><h4>📌 Segundos fijos (salen siempre con el menú)</h4><button class="btn chico" data-nuevo-menu="fijo">＋ Nuevo fijo</button></div>
+        ${fijos.map(filaFijo).join('') || '<div class="suave">Sin segundos fijos.</div>'}
+
+        <div class="fila entre"><h4>🔄 Segundos del día</h4><button class="btn chico" data-nuevo-menu="variable">＋ Nuevo variable</button></div>
+        ${variablesDelDia.map(filaVariable).join('') || '<div class="suave">Sin segundos seleccionados para hoy.</div>'}
+        ${variablesDisponibles.length ? `<select class="entrada" id="add-variable" style="width:100%">
+          <option value="">＋ Agregar segundo al día…</option>
+          ${variablesDisponibles.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}
+        </select>` : ''}
       </div>
+
       <div class="tarjeta">
         <div class="fila entre"><h3>🥗 Guarniciones a elección (${delDia.length})</h3></div>
         <p class="suave peq">Toque para marcar las que se ofrecen este día. Si no marca ninguna, se ofrecen las habituales
@@ -2503,6 +2537,7 @@ async function adminCarta(cont) {
           .join('')}</div>
         <form class="fila" id="form-guar" style="margin-top:10px"><input class="entrada crecer" name="nombre" placeholder="Nueva guarnición…" autocomplete="off"><button class="btn chico">Agregar</button></form>
       </div>
+
       <div class="tarjeta">
         <div class="fila entre"><h3>⭐ Extras (salen todos los días)</h3><button class="btn chico" id="ver-platos">Editar extras</button></div>
         ${carta.extras
@@ -2514,6 +2549,7 @@ async function adminCarta(cont) {
           )
           .join('')}
       </div>
+
       <div class="tarjeta">
         <div class="fila entre"><h3>🍹 Bebidas (salen todos los días)</h3><button class="btn chico" id="ver-bebidas">Editar bebidas</button></div>
         ${(carta.bebidas || [])
@@ -2526,11 +2562,14 @@ async function adminCarta(cont) {
           .join('') || '<div class="suave">Sin bebidas. Agregue desde "Editar bebidas".</div>'}
       </div>
     </div>`;
+
   const recargar = () => adminCarta(cont);
+
   $('#fecha', cont).onchange = (e) => {
     S.fechaCarta = e.target.value || null;
     recargar();
   };
+
   $('#copiar', cont).onclick = async () => {
     const desde = diaAnterior(fecha);
     try {
@@ -2541,6 +2580,7 @@ async function adminCarta(cont) {
       toast(e.message, 'error');
     }
   };
+
   const alternarMenu = async (id, v) => {
     try {
       await api('POST', '/api/carta/menu', { fecha, producto_id: id, incluir: v });
@@ -2549,8 +2589,30 @@ async function adminCarta(cont) {
       toast(e.message, 'error');
     }
   };
+
+  // Selector de sopa: cambiar al seleccionar
+  const selSopa = $('#sel-sopa', cont);
+  if (selSopa) {
+    selSopa.onchange = async () => {
+      const id = Number(selSopa.value);
+      if (!id) return;
+      await alternarMenu(id, true);
+    };
+  }
+
+  // Selector para agregar segundo variable al día
+  const addVar = $('#add-variable', cont);
+  if (addVar) {
+    addVar.onchange = async () => {
+      const id = Number(addVar.value);
+      if (!id) return;
+      await alternarMenu(id, true);
+    };
+  }
+
+  // Botón quitar segundo variable
   $$('[data-menu]', cont).forEach((x) => (x.onclick = () => alternarMenu(Number(x.dataset.menu), x.dataset.v === '1')));
-  $$('[data-menu-txt]', cont).forEach((x) => (x.onclick = () => $(`[data-menu="${x.dataset.menuTxt}"]`, cont).click()));
+
   $$('[data-guar]', cont).forEach(
     (x) =>
       (x.onclick = async () => {
@@ -2562,6 +2624,7 @@ async function adminCarta(cont) {
         }
       })
   );
+
   $('#form-guar', cont).onsubmit = async (e) => {
     e.preventDefault();
     const nombre = e.target.nombre.value.trim();
@@ -2574,18 +2637,10 @@ async function adminCarta(cont) {
       toast(err.message, 'error');
     }
   };
+
   $$('[data-nuevo-menu]', cont).forEach((x) => (x.onclick = () => formularioPlato(null, { tipo: x.dataset.nuevoMenu, fecha })));
-  $$('[data-editar-plato]', cont).forEach((x) => (x.onclick = () => formularioPlato([...menu, ...sopas].find((p) => p.id === Number(x.dataset.editarPlato)))));
-  $('#form-precio-menu', cont).onsubmit = async (e) => {
-    e.preventDefault();
-    try {
-      await api('PUT', '/api/carta/precio-menu', { precio: Number(e.target.precio.value) });
-      toast('Precio del menú guardado', 'ok');
-      recargar();
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  };
+  $$('[data-editar-plato]', cont).forEach((x) => (x.onclick = () => formularioPlato(fijos.find((p) => p.id === Number(x.dataset.editarPlato)))));
+
   $('#ver-platos', cont).onclick = () => {
     S.adminTab = 'platos';
     S.filtroPlatos = 'extra';
@@ -2595,6 +2650,34 @@ async function adminCarta(cont) {
     S.adminTab = 'platos';
     S.filtroPlatos = 'bebidas';
     vAdmin($('#vista'));
+  };
+}
+
+/** Configuración general del restaurante */
+async function adminConfiguracion(cont) {
+  const ajustes = await api('GET', '/api/ajustes');
+  cont.innerHTML = `
+    <div class="pila">
+      <div class="tarjeta pila">
+        <h3>⚙️ Configuración</h3>
+        <form class="pila" id="form-config" novalidate>
+          <label class="campo">
+            <span>Precio del menú del día</span>
+            <input class="entrada" name="precio_menu" type="number" step="0.10" min="0" inputmode="decimal"
+              value="${ajustes.precio_menu || ''}" placeholder="0.00" required>
+          </label>
+          <button class="btn primario" type="submit">Guardar</button>
+        </form>
+      </div>
+    </div>`;
+  $('#form-config', cont).onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api('PUT', '/api/carta/precio-menu', { precio: Number(e.target.precio_menu.value) });
+      toast('Configuración guardada', 'ok');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   };
 }
 
