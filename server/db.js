@@ -53,8 +53,9 @@ CREATE TABLE IF NOT EXISTS guarniciones (
   eleccion_habitual INTEGER NOT NULL DEFAULT 0
 );
 
--- Catálogo de platos. tipo: 'menu' (sale solo los días que se elige en menu_dia)
--- o 'extra' (carta fija). Ambos pueden llevar guarnición por defecto + guarnición a elección.
+-- Catálogo de platos. tipo: 'menu' o 'extra' (carta fija, precio propio).
+-- Menú (precio fijo, ajustes.precio_menu): menu_rol 'sopa' (una por día, en menu_dia),
+-- 'fijo' (segundo que sale todos los días) o 'variable' (segundo elegido en menu_dia). Ambos pueden llevar guarnición por defecto + guarnición a elección.
 CREATE TABLE IF NOT EXISTS productos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   nombre TEXT NOT NULL,
@@ -160,6 +161,8 @@ agregarColumna('comanda_items', 'guarnicion_defecto', "TEXT NOT NULL DEFAULT ''"
 agregarColumna('comanda_items', 'guarnicion_eleccion_id', 'INTEGER');
 agregarColumna('comanda_items', 'guarnicion_eleccion', "TEXT NOT NULL DEFAULT ''");
 agregarColumna('usuarios', 'pin_hash', 'TEXT');
+agregarColumna('productos', 'menu_rol', "TEXT NOT NULL DEFAULT 'variable'");
+agregarColumna('comanda_items', 'sopa', "TEXT NOT NULL DEFAULT ''");
 agregarColumna('mesas', 'piso', "TEXT NOT NULL DEFAULT 'Nivel 1'");
 agregarColumna('mesas', 'zona', "TEXT NOT NULL DEFAULT 'Salón'");
 agregarColumna('mesas', 'forma', "TEXT NOT NULL DEFAULT 'rectangular'");

@@ -94,7 +94,7 @@ function qr(texto, ancho = 110) {
 }
 
 function lineasGuarnicion(it) {
-  const r = [];
+  const r = it.sopa ? [{ txt: `+ Sopa: ${it.sopa}`, cambio: false }] : [];
   if (it.guarnicion_defecto && !it.guarnicion_base) r.push({ txt: `SIN ${it.guarnicion_defecto.toUpperCase()}`, cambio: true });
   else if (it.guarnicion_base && it.guarnicion_defecto && it.guarnicion_base !== it.guarnicion_defecto)
     r.push({ txt: `CAMBIO: ${it.guarnicion_base} (en vez de ${it.guarnicion_defecto})`, cambio: true });
