@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS productos (
   descripcion TEXT NOT NULL DEFAULT '',
   categoria TEXT NOT NULL DEFAULT '',
   precio REAL NOT NULL DEFAULT 0,
-  tipo TEXT NOT NULL CHECK (tipo IN ('menu','extra')),
+  tipo TEXT NOT NULL CHECK (tipo IN ('menu','extra','bebidas')),
   fecha TEXT,
   guarnicion_base_id INTEGER REFERENCES guarniciones(id) ON DELETE SET NULL,
   con_eleccion INTEGER NOT NULL DEFAULT 0,
@@ -183,6 +183,36 @@ agregarColumna('mesas', 'alto', 'REAL NOT NULL DEFAULT 15');
 agregarColumna('mesas', 'unida_a', 'INTEGER');
 // Número de mesa con el que se tomó la comanda ("10-11" si estaban unidas)
 agregarColumna('comandas', 'mesa_etiqueta', "TEXT NOT NULL DEFAULT ''");
+// Migración: agregar tipo 'bebidas' al CHECK constraint de productos
+{
+  const _sq = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='productos'").get();
+  if (_sq && !_sq.sql.includes("'bebidas'")) {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE productos_migr (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL,
+        descripcion TEXT NOT NULL DEFAULT '',
+        categoria TEXT NOT NULL DEFAULT '',
+        precio REAL NOT NULL DEFAULT 0,
+        tipo TEXT NOT NULL CHECK (tipo IN ('menu','extra','bebidas')),
+        fecha TEXT,
+        menu_rol TEXT NOT NULL DEFAULT 'variable',
+        guarnicion_base_id INTEGER REFERENCES guarniciones(id) ON DELETE SET NULL,
+        con_eleccion INTEGER NOT NULL DEFAULT 0,
+        para_local INTEGER NOT NULL DEFAULT 1,
+        para_llevar INTEGER NOT NULL DEFAULT 1,
+        disponible INTEGER NOT NULL DEFAULT 1,
+        activo INTEGER NOT NULL DEFAULT 1
+      );
+      INSERT INTO productos_migr (id, nombre, descripcion, categoria, precio, tipo, fecha, menu_rol, guarnicion_base_id, con_eleccion, para_local, para_llevar, disponible, activo)
+        SELECT id, nombre, descripcion, categoria, precio, tipo, fecha, COALESCE(menu_rol, 'variable'), guarnicion_base_id, con_eleccion, para_local, para_llevar, disponible, activo FROM productos;
+      DROP TABLE productos;
+      ALTER TABLE productos_migr RENAME TO productos;
+    `);
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
 db.exec(`CREATE TABLE IF NOT EXISTS plano_elementos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   piso TEXT NOT NULL,

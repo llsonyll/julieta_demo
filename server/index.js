@@ -566,11 +566,11 @@ app.get(
 function validarProducto(b) {
   const nombre = texto(b.nombre, 120);
   if (!nombre) fail(400, 'El nombre es obligatorio');
-  const tipo = b.tipo === 'menu' ? 'menu' : b.tipo === 'extra' ? 'extra' : fail(400, 'Indique si es menú o extra');
-  const menu_rol = tipo === 'extra' ? 'variable' : ROLES_MENU.includes(b.menu_rol) ? b.menu_rol : fail(400, 'Indique si es sopa, segundo fijo o variable');
+  const tipo = ['menu', 'extra', 'bebidas'].includes(b.tipo) ? b.tipo : fail(400, 'Indique si es menú, extra o bebida');
+  const menu_rol = tipo === 'extra' || tipo === 'bebidas' ? 'variable' : ROLES_MENU.includes(b.menu_rol) ? b.menu_rol : fail(400, 'Indique si es sopa, segundo fijo o variable');
   // los platos del menú no tienen precio propio: se cobra el precio fijo del menú
   const precio = tipo === 'menu' ? 0 : Number(b.precio);
-  if ((tipo === 'extra' && b.precio === '') || !Number.isFinite(precio) || precio < 0) fail(400, 'Precio inválido');
+  if (((tipo === 'extra' || tipo === 'bebidas') && b.precio === '') || !Number.isFinite(precio) || precio < 0) fail(400, 'Precio inválido');
   let guarnicion_base_id = b.guarnicion_base_id ? Number(b.guarnicion_base_id) : null;
   if (guarnicion_base_id && !db.prepare('SELECT 1 FROM guarniciones WHERE id = ?').get(guarnicion_base_id))
     fail(400, 'La guarnición elegida no existe');
@@ -662,7 +662,7 @@ function cartaDelDia(fecha, completo) {
   const productos = db
     .prepare(`${SQL_PRODUCTO} WHERE ${completo ? '1=1' : 'p.activo = 1'} ORDER BY p.categoria, p.nombre`)
     .all()
-    .map((p) => ({ ...p, en_carta: p.tipo === 'extra' || enMenu.has(p.id) || (p.menu_rol === 'fijo' && sopa) ? 1 : 0 }));
+    .map((p) => ({ ...p, en_carta: p.tipo === 'extra' || p.tipo === 'bebidas' || enMenu.has(p.id) || (p.menu_rol === 'fijo' && sopa) ? 1 : 0 }));
   const guarniciones = db
     .prepare(`SELECT * FROM guarniciones WHERE ${completo ? '1=1' : 'activo = 1'} ORDER BY nombre`)
     .all()
@@ -675,6 +675,7 @@ function cartaDelDia(fecha, completo) {
     // segundos del menú: fijos (todos los días con menú) + variables del día
     menu: productos.filter((p) => p.tipo === 'menu' && p.menu_rol !== 'sopa' && (completo || (p.en_carta && sopa))),
     extras: productos.filter((p) => p.tipo === 'extra'),
+    bebidas: productos.filter((p) => p.tipo === 'bebidas'),
     guarniciones,
   };
 }
