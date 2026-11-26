@@ -16,7 +16,6 @@ const S = {
   vista: null, // { nombre, recargar, escucha: [] }
   timers: [],
   filtroComandas: 'activas',
-  filtroMesas: 'todas',
   adminTab: 'carta',
   filtroPlatos: 'todos',
   filtroCarta: 'todas',
@@ -53,6 +52,14 @@ const TAB_INFO = {
   reporte: ['Reportes', 'Análisis', '<path d="M3 3v18h18M8 17V9M13 17V5M18 17v-3"/>'],
   admin: ['Configuración', 'Sistema', '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'],
 };
+// Tabs disponibles según todos los roles del usuario (unión ordenada)
+function tabsDelUsuario() {
+  const roles = S.me?.roles || [S.me?.rol];
+  const orden = ['mesas', 'comandas', 'tickets', 'comprobantes', 'carta', 'reporte', 'admin'];
+  const todos = new Set(roles.flatMap((r) => TABS[r] || []));
+  return orden.filter((t) => todos.has(t));
+}
+
 const svg = (d, t = 20) =>
   `<svg width="${t}" height="${t}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 
@@ -67,7 +74,7 @@ function fechaISO(d) {
 }
 const fechaHoy = () => fechaISO(new Date(ahoraServidor()));
 const diaAnterior = (f) => fechaISO(new Date(parseFecha(`${f} 12:00:00`).getTime() - 86400000));
-const puede = (...roles) => S.me && roles.includes(S.me.rol);
+const puede = (...roles) => S.me && (S.me.roles || [S.me.rol]).some((r) => roles.includes(r));
 const tactil = () => matchMedia('(pointer: coarse)').matches;
 
 // ---------------- API ----------------
@@ -251,6 +258,12 @@ function formulario({ titulo, campos, valores = {}, enviar, eliminar, textoElimi
       if (c.t === 'check')
         return `<label class="check"><input type="checkbox" name="${c.n}" ${v ? 'checked' : ''}> ${esc(c.l)}</label>
           ${c.ayuda ? `<small class="suave ayuda-check">${esc(c.ayuda)}</small>` : ''}`;
+      if (c.t === 'checks') {
+        const vals = Array.isArray(v) ? v.map(String) : [];
+        return `<label class="campo"><span>${esc(c.l)}</span><div data-checks="${c.n}">${c.op
+          .map(([ov, ot]) => `<label class="check"><input type="checkbox" value="${esc(ov)}" ${vals.includes(String(ov)) ? 'checked' : ''}> ${esc(ot)}</label>`)
+          .join('')}</div></label>`;
+      }
       let control;
       if (c.t === 'select')
         control = `<select name="${c.n}">${c.op
@@ -291,13 +304,17 @@ function formulario({ titulo, campos, valores = {}, enviar, eliminar, textoElimi
     e.preventDefault();
     const datos = {};
     for (const c of campos) {
-      const el = f.elements[c.n];
-      if (c.t === 'check') datos[c.n] = el.checked;
-      else if (c.t === 'number') datos[c.n] = el.value === '' ? '' : Number(el.value);
-      else datos[c.n] = el.value;
-      if (c.req && (datos[c.n] === '' || datos[c.n] == null)) {
-        err.textContent = `Complete: ${c.l}`;
-        return;
+      if (c.t === 'checks') {
+        datos[c.n] = [...f.querySelectorAll(`[data-checks="${c.n}"] input:checked`)].map((cb) => cb.value);
+      } else {
+        const el = f.elements[c.n];
+        if (c.t === 'check') datos[c.n] = el.checked;
+        else if (c.t === 'number') datos[c.n] = el.value === '' ? '' : Number(el.value);
+        else datos[c.n] = el.value;
+        if (c.req && (datos[c.n] === '' || datos[c.n] == null)) {
+          err.textContent = `Complete: ${c.l}`;
+          return;
+        }
       }
     }
     const btn = $('button.primario', f);
@@ -381,7 +398,7 @@ function notificar(d) {
 }
 
 async function actualizarContadores() {
-  if (!S.me || !TABS[S.me.rol].includes('tickets')) return;
+  if (!S.me || !tabsDelUsuario().includes('tickets')) return;
   try {
     const lista = await api('GET', '/api/comandas?vista=cocina');
     const n = lista.filter((c) => !c.ticket_impreso).length;
@@ -491,7 +508,7 @@ async function renderLogin(mensaje = '') {
 function renderShell() {
   const rol = S.me.rol;
   const grupos = {};
-  for (const id of TABS[rol]) (grupos[TAB_INFO[id][1]] ||= []).push(id);
+  for (const id of tabsDelUsuario()) (grupos[TAB_INFO[id][1]] ||= []).push(id);
   let colapsado = false;
   try {
     colapsado = localStorage.getItem('lateral') === 'colapsado';
@@ -503,7 +520,7 @@ function renderShell() {
           <img class="logo" src="/icono.svg" alt="">
           <div class="txt"><b>${esc(S.config.nombreRestaurante)}</b><small>${esc(S.config.direccion || 'Sistema de comandas')}</small></div>
         </div>
-        <div class="rol-pill"><span class="txt">${ROL_TXT[rol]}</span><span class="punto" id="punto"></span></div>
+        <div class="rol-pill"><span class="txt">${(S.me.roles || [rol]).map((r) => ROL_TXT[r]).join(' + ')}</span><span class="punto" id="punto"></span></div>
         <nav class="nav">${Object.entries(grupos)
           .map(
             ([g, ids]) => `<div class="grupo">${esc(g)}</div>${ids
@@ -519,8 +536,8 @@ function renderShell() {
           <button class="btn-menu" data-accion="menu-movil" aria-label="Menú">${svg('<path d="M4 6h16M4 12h16M4 18h16"/>', 22)}</button>
           <h1 id="titulo-vista" class="crecer"></h1>
           <span class="reloj" id="reloj"></span>
-          ${TABS[rol].includes('tickets') ? `<a class="impresora-sup oculto" id="estado-impresora" href="#/tickets" aria-label="Estado de la ticketera">${svg('<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/>')}<span class="contador oculto"></span></a>` : ''}
-          ${TABS[rol].includes('tickets') ? `<a class="campana" href="#/tickets" aria-label="Tickets pendientes">${svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/>')}<span class="contador oculto"></span></a>` : ''}
+          ${tabsDelUsuario().includes('tickets') ? `<a class="impresora-sup oculto" id="estado-impresora" href="#/tickets" aria-label="Estado de la ticketera">${svg('<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/>')}<span class="contador oculto"></span></a>` : ''}
+          ${tabsDelUsuario().includes('tickets') ? `<a class="campana" href="#/tickets" aria-label="Tickets pendientes">${svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/>')}<span class="contador oculto"></span></a>` : ''}
           <button class="usuario-sup" data-accion="menu-usuario" aria-label="Menú de usuario">
             <span class="avatar" style="background:${COLORES_AVATAR[S.me.id % COLORES_AVATAR.length]}">${esc(iniciales(S.me.nombre))}</span>
             <span class="txt"><b>${esc(S.me.nombre)}</b><small>${ROL_TXT[rol]}</small></span>
@@ -542,7 +559,7 @@ function renderShell() {
 function iniciarApp() {
   renderShell();
   abrirSSE();
-  if (!location.hash || location.hash === '#/') location.hash = `#/${TABS[S.me.rol][0]}`;
+  if (!location.hash || location.hash === '#/') location.hash = `#/${tabsDelUsuario()[0]}`;
   else navegar();
   actualizarContadores();
   cargarTicketera();
@@ -575,8 +592,8 @@ async function navegar() {
   cerrarModal();
   const r = rutaActual();
   const def = VISTAS[r.nombre];
-  if (!def || !def.roles.includes(S.me.rol)) {
-    location.hash = `#/${TABS[S.me.rol][0]}`;
+  if (!def || !def.roles.some((r) => (S.me.roles || [S.me.rol]).includes(r))) {
+    location.hash = `#/${tabsDelUsuario()[0]}`;
     return;
   }
   const tabActivo = { comanda: 'comandas', nueva: 'comandas', editar: 'comandas' }[r.nombre] || r.nombre;
@@ -847,7 +864,7 @@ const ACCIONES = {
     const m = abrirModal(`
       <div class="pila">
         <div class="fila entre"><h3>${esc(S.me.nombre)}</h3><button class="btn chico" data-x>✕</button></div>
-        <div class="suave">${ROL_TXT[S.me.rol]} · usuario <b>${esc(S.me.usuario)}</b></div>
+        <div class="suave">${(S.me.roles || [S.me.rol]).map((r) => ROL_TXT[r]).join(' + ')} · usuario <b>${esc(S.me.usuario)}</b></div>
         <div class="tarjeta">${t ? `🟢 En turno desde las <b>${hora(t.inicio)}</b>` : '⚪ Sin turno abierto hoy'}</div>
         ${t ? '' : '<button class="btn ok bloque" data-a="iniciar">Iniciar turno</button>'}
         <button class="btn bloque" data-a="salir">Cerrar sesión (seguir en turno)</button>
@@ -1364,8 +1381,8 @@ async function vEditorComanda(main, r, esRecarga) {
     const m = mesaSel();
     const titulo = b.tipo === 'llevar' ? 'Para llevar' : m ? `Mesa ${esc(m.etiqueta)}` : 'Elija una mesa';
     const sub =
-      b.tipo === 'local' && m ? [m.piso, m.zona, m.mozo_nombre].filter(Boolean).map(esc).join(' · ') : editando ? `Comanda #${existente.numero_dia}` : 'Nueva comanda';
-    const ordenMesas = [...mesas].sort((a, c) => (c.mozo_id === S.me.id) - (a.mozo_id === S.me.id));
+      b.tipo === 'local' && m ? [m.piso, m.zona].filter(Boolean).map(esc).join(' · ') : editando ? `Comanda #${existente.numero_dia}` : 'Nueva comanda';
+    const ordenMesas = mesas;
     main.innerHTML = `
       <div class="editor">
         <div class="editor-cab">
@@ -1398,7 +1415,7 @@ async function vEditorComanda(main, r, esRecarga) {
                     ${ordenMesas
                       .map(
                         (x) =>
-                          `<option value="${x.id}" ${x.id === b.mesa_id ? 'selected' : ''}>Mesa ${esc(x.etiqueta)} · ${esc(x.piso || '')} · ${x.ocupada ? 'ocupada' : 'libre'}${S.me.rol === 'mozo' && x.mozo_id === S.me.id ? ' ★' : ''}</option>`
+                          `<option value="${x.id}" ${x.id === b.mesa_id ? 'selected' : ''}>Mesa ${esc(x.etiqueta)} · ${esc(x.piso || '')} · ${x.ocupada ? 'ocupada' : 'libre'}</option>`
                       )
                       .join('')}
                   </select>`
@@ -1841,16 +1858,14 @@ async function vMesas(main) {
     .filter((m) => m.principal_id === m.id && m.ocupada && minutosDesde(m.ocupada_desde) >= EXCEDIDO_MIN)
     .sort((a, b) => a.ocupada_desde.localeCompare(b.ocupada_desde));
   const llevar = comandas.filter((c) => c.tipo === 'llevar');
-  const mias = principales.filter((m) => m.mozo_id === S.me.id).length;
 
   const htmlMesa = (m) => {
     const p = principal(m);
     const min = p.ocupada ? minutosDesde(p.ocupada_desde) : 0;
     const mostrarDatos = m.id === p.id && p.ocupada;
     return `<button class="mesa-p ${estadoMesa(p)}${min >= EXCEDIDO_MIN ? ' excedida' : ''}${unir?.has(m.id) ? ' sel' : ''}"
-        data-m="${m.id}" data-mia="${p.mozo_id === S.me.id ? 1 : 0}" style="${enPlano(m, H)}"
+        data-m="${m.id}" style="${enPlano(m, H)}"
         title="Mesa ${esc(m.etiqueta)} · ${esc(m.piso)}">
-      ${p.mozo_id === S.me.id && m.id === p.id ? '<span class="mia" aria-label="Asignada a ti">★</span>' : ''}
       <b>${esc(m.numero)}</b>
       ${mostrarDatos ? `<small>${dinero(p.por_cobrar)}</small><small class="t">${min >= EXCEDIDO_MIN ? '⚠ ' : ''}${duracion(min)}</small>` : ''}
     </button>`;
@@ -1890,7 +1905,6 @@ async function vMesas(main) {
           modo === 'mapa'
             ? `${pisos.length > 1 ? `<div class="segmento compacto">${pisos.map((p) => `<button data-piso="${esc(p)}" class="${p === S.salonPiso ? 'activo' : ''}">${esc(p)}</button>`).join('')}</div>` : ''}
               ${!editar && !unir ? '<button class="btn chico" id="modo-unir">🔗 Unir mesas</button>' : ''}
-              ${rol === 'mozo' ? `<button class="btn chico ${S.filtroMesas === 'mias' ? 'primario' : ''}" id="mis-mesas">★ Mis mesas <span class="cuenta">${mias}</span></button>` : ''}
               ${rol === 'admin' && !editar && !unir ? '<button class="btn chico" id="modo-editar">✏️ Editar plano</button>' : ''}
               <div class="conteos"><span class="libre">Libre ${cuenta('libre')}</span><span class="ocupada">Ocupada ${cuenta('ocupada')}</span><span class="cobrar">Por cobrar ${cuenta('cobrar')}</span></div>`
             : ''
@@ -1911,23 +1925,20 @@ async function vMesas(main) {
               </div>
               <aside class="excedidas">
                 <h4>⚠ Tiempo excedido (${excedidas.length})</h4>
-                ${excedidas.map((m) => `<button class="tarjeta" data-m="${m.id}"><b>Mesa ${esc(m.etiqueta)}</b><small>${esc(m.piso)} · ${esc(m.mozo_nombre || 'sin mozo')}</small><span class="t">${duracion(minutosDesde(m.ocupada_desde))}</span></button>`).join('') || `<div class="suave peq">Ninguna mesa pasa de ${EXCEDIDO_MIN} min.</div>`}
+                ${excedidas.map((m) => `<button class="tarjeta" data-m="${m.id}"><b>Mesa ${esc(m.etiqueta)}</b><small>${esc(m.piso)}</small><span class="t">${duracion(minutosDesde(m.ocupada_desde))}</span></button>`).join('') || `<div class="suave peq">Ninguna mesa pasa de ${EXCEDIDO_MIN} min.</div>`}
               </aside>
             </div>
-            <div class="leyenda-salon">Leyenda: <span><i class="libre"></i>Libre</span><span><i class="ocupada"></i>Ocupada</span><span><i class="cobrar"></i>Por cobrar (todo entregado)</span><span><i class="excedida"></i>Tiempo excedido (+${EXCEDIDO_MIN} min)</span><span><i class="unidas"></i>Mesas unidas</span>${rol === 'mozo' ? '<span>★ Asignada a ti</span>' : ''}</div>`
+            <div class="leyenda-salon">Leyenda: <span><i class="libre"></i>Libre</span><span><i class="ocupada"></i>Ocupada</span><span><i class="cobrar"></i>Por cobrar (todo entregado)</span><span><i class="excedida"></i>Tiempo excedido (+${EXCEDIDO_MIN} min)</span><span><i class="unidas"></i>Mesas unidas</span></div>`
       }
     </div>`;
 
   const otraVez = () => vMesas(main);
-  if (rol === 'mozo' && S.filtroMesas === 'mias')
-    $$('.mesa-p', main).forEach((el) => el.classList.toggle('tenue', el.dataset.mia !== '1'));
   $$('[data-modo]', main).forEach((b) => (b.onclick = () => ((S.salonModo = b.dataset.modo), (S.salonUnir = null), (S.salonEditar = false), otraVez())));
   $$('[data-piso]', main).forEach((b) => (b.onclick = () => ((S.salonPiso = b.dataset.piso), (S.salonUnir = unir && new Set()), otraVez())));
   const on = (sel, fn) => {
     const el = $(sel, main);
     if (el) el.onclick = fn;
   };
-  on('#mis-mesas', () => ((S.filtroMesas = S.filtroMesas === 'mias' ? 'todas' : 'mias'), otraVez()));
   on('#modo-unir', () => ((S.salonUnir = new Set()), otraVez()));
   on('#modo-editar', () => ((S.salonEditar = true), otraVez()));
   on('#cancelar-modo', () => ((S.salonUnir = null), (S.salonEditar = false), otraVez()));
@@ -1968,7 +1979,7 @@ async function vMesas(main) {
         const modal = abrirModal(`
           <div class="pila">
             <div class="fila entre"><h3>Mesa ${esc(p.etiqueta)} <span class="suave peq">· ${esc(p.piso)}</span></h3><button class="btn chico" data-x>✕</button></div>
-            <div class="suave">Mozo: ${esc(p.mozo_nombre || '-')}${cs.length ? ` · Consumo: <b>${dinero(total)}</b>` : ' · Libre'}</div>
+            <div class="suave">${cs.length ? `Consumo: <b>${dinero(total)}</b>` : 'Libre'}</div>
             ${cs.length && puede('admin', 'caja') ? `<button class="btn acento bloque" id="cobrar-mesa">💵 Cobrar mesa completa (${dinero(total)})</button>` : ''}
             ${cs.length ? `<button class="btn bloque" id="precuenta-mesa">🧾 Precuenta (${dinero(total)})</button>` : ''}
             ${cs.map(tarjetaComanda).join('')}
@@ -2598,7 +2609,8 @@ async function adminUsuarios(cont) {
     { n: 'nombre', l: 'Nombre completo', req: true },
     { n: 'usuario', l: 'Usuario (identificador interno)', req: true },
     { n: 'pin', l: nuevo ? 'PIN (4 dígitos)' : 'Nuevo PIN (vacío = no cambiar)', t: 'password', attrs: 'inputmode="numeric" maxlength="4" pattern="\\d{4}"', req: nuevo },
-    { n: 'rol', l: 'Rol', t: 'select', op: Object.entries(ROL_TXT), def: 'mozo' },
+    { n: 'rol', l: 'Rol principal', t: 'select', op: Object.entries(ROL_TXT), def: 'mozo' },
+    { n: 'roles_extra', l: 'Roles adicionales', t: 'checks', op: Object.entries(ROL_TXT) },
     { n: 'activo', l: 'Activo (puede ingresar)', t: 'check', def: true },
   ];
   cont.innerHTML = `
@@ -2608,7 +2620,7 @@ async function adminUsuarios(cont) {
         .map(
           (u) => `<div class="item">
             <div class="crecer"><b>${esc(u.nombre)}</b> ${u.en_turno ? '<span class="etiqueta pagada">EN TURNO</span>' : ''} ${!u.activo ? '<span class="etiqueta agotado">INACTIVO</span>' : ''}
-              <div class="suave peq">${esc(u.usuario)} · ${ROL_TXT[u.rol]}${u.rol === 'mozo' ? ` · ${u.mesas_asignadas} mesa(s)` : ''}</div></div>
+              <div class="suave peq">${esc(u.usuario)} · ${(u.roles || [u.rol]).map((r) => ROL_TXT[r]).join(' + ')}${(u.roles || [u.rol]).includes('mozo') ? ` · ${u.mesas_asignadas} mesa(s)` : ''}</div></div>
             <button class="btn chico" data-edit="${u.id}">Editar</button></div>`
         )
         .join('')}</div>
@@ -2621,7 +2633,7 @@ async function adminUsuarios(cont) {
         formulario({
           titulo: `Editar: ${u.nombre}`,
           campos: campos(false),
-          valores: { ...u, pin: '' },
+          valores: { ...u, pin: '', roles_extra: (u.roles || []).filter((r) => r !== u.rol) },
           enviar: (d) => api('PUT', `/api/usuarios/${u.id}`, d),
           eliminar:
             u.id !== S.me.id
@@ -2637,43 +2649,26 @@ async function adminUsuarios(cont) {
 }
 
 async function adminMesas(cont) {
-  const [mesas, mozos] = await Promise.all([api('GET', '/api/mesas'), api('GET', '/api/mozos')]);
+  const mesas = await api('GET', '/api/mesas');
   const campos = [
     { n: 'numero', l: 'Número o nombre de mesa', req: true },
     { n: 'capacidad', l: 'Capacidad (personas)', t: 'number', paso: '1', def: 4 },
-    { n: 'mozo_id', l: 'Mozo asignado', t: 'select', op: [['', '— Sin asignar —'], ...mozos.map((m) => [m.id, m.nombre])] },
     { n: 'piso', l: 'Nivel', def: 'Nivel 1', lista: [...new Set(mesas.map((m) => m.piso))], ayuda: 'La ubicación en el plano se ajusta en Salón → Editar plano' },
     { n: 'activa', l: 'Activa', t: 'check', def: true },
   ];
   cont.innerHTML = `
     <div class="tarjeta">
       <div class="fila entre"><h3>Mesas (${mesas.length})</h3><button class="btn chico primario" id="nuevo">＋ Nueva</button></div>
-      <p class="suave peq">Cada mesa tiene un mozo a cargo, pero cualquier mozo puede tomar pedidos en cualquier mesa.</p>
       <div class="lista-admin">${mesas
         .map(
           (m) => `<div class="item">
             <div class="crecer"><b>Mesa ${esc(m.numero)}</b> ${m.ocupada ? '<span class="etiqueta llevar">OCUPADA</span>' : ''} ${!m.activa ? '<span class="etiqueta agotado">INACTIVA</span>' : ''}
               <div class="suave peq">${m.capacidad} personas · ${esc(m.piso)}</div></div>
-            <select class="entrada" style="width:auto;max-width:45%" data-asignar="${m.id}">
-              <option value="">Sin mozo</option>${mozos.map((z) => `<option value="${z.id}" ${z.id === m.mozo_id ? 'selected' : ''}>${esc(z.nombre)}</option>`).join('')}
-            </select>
             <button class="btn chico" data-edit="${m.id}">✏️</button></div>`
         )
         .join('')}</div>
     </div>`;
   $('#nuevo', cont).onclick = () => formulario({ titulo: 'Nueva mesa', campos, enviar: (d) => api('POST', '/api/mesas', d) });
-  $$('[data-asignar]', cont).forEach(
-    (s) =>
-      (s.onchange = async () => {
-        const m = mesas.find((x) => x.id === Number(s.dataset.asignar));
-        try {
-          await api('PUT', `/api/mesas/${m.id}`, { ...m, mozo_id: s.value || null });
-          toast(`Mesa ${m.numero} asignada`, 'ok', 1500);
-        } catch (e) {
-          toast(e.message, 'error');
-        }
-      })
-  );
   $$('[data-edit]', cont).forEach(
     (b) =>
       (b.onclick = () => {
@@ -2681,7 +2676,7 @@ async function adminMesas(cont) {
         formulario({
           titulo: `Mesa ${m.numero}`,
           campos,
-          valores: { ...m, mozo_id: m.mozo_id ?? '' },
+          valores: m,
           enviar: (d) => api('PUT', `/api/mesas/${m.id}`, d),
           eliminar: async () => {
             const r = await api('DELETE', `/api/mesas/${m.id}`);
