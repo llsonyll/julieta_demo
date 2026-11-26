@@ -16,7 +16,6 @@ const S = {
   vista: null, // { nombre, recargar, escucha: [] }
   timers: [],
   filtroComandas: 'activas',
-  filtroMesas: 'todas',
   adminTab: 'carta',
   filtroPlatos: 'todos',
   filtroCarta: 'todas',
@@ -1364,8 +1363,8 @@ async function vEditorComanda(main, r, esRecarga) {
     const m = mesaSel();
     const titulo = b.tipo === 'llevar' ? 'Para llevar' : m ? `Mesa ${esc(m.etiqueta)}` : 'Elija una mesa';
     const sub =
-      b.tipo === 'local' && m ? [m.piso, m.zona, m.mozo_nombre].filter(Boolean).map(esc).join(' · ') : editando ? `Comanda #${existente.numero_dia}` : 'Nueva comanda';
-    const ordenMesas = [...mesas].sort((a, c) => (c.mozo_id === S.me.id) - (a.mozo_id === S.me.id));
+      b.tipo === 'local' && m ? [m.piso, m.zona].filter(Boolean).map(esc).join(' · ') : editando ? `Comanda #${existente.numero_dia}` : 'Nueva comanda';
+    const ordenMesas = mesas;
     main.innerHTML = `
       <div class="editor">
         <div class="editor-cab">
@@ -1398,7 +1397,7 @@ async function vEditorComanda(main, r, esRecarga) {
                     ${ordenMesas
                       .map(
                         (x) =>
-                          `<option value="${x.id}" ${x.id === b.mesa_id ? 'selected' : ''}>Mesa ${esc(x.etiqueta)} · ${esc(x.piso || '')} · ${x.ocupada ? 'ocupada' : 'libre'}${S.me.rol === 'mozo' && x.mozo_id === S.me.id ? ' ★' : ''}</option>`
+                          `<option value="${x.id}" ${x.id === b.mesa_id ? 'selected' : ''}>Mesa ${esc(x.etiqueta)} · ${esc(x.piso || '')} · ${x.ocupada ? 'ocupada' : 'libre'}</option>`
                       )
                       .join('')}
                   </select>`
@@ -1841,16 +1840,14 @@ async function vMesas(main) {
     .filter((m) => m.principal_id === m.id && m.ocupada && minutosDesde(m.ocupada_desde) >= EXCEDIDO_MIN)
     .sort((a, b) => a.ocupada_desde.localeCompare(b.ocupada_desde));
   const llevar = comandas.filter((c) => c.tipo === 'llevar');
-  const mias = principales.filter((m) => m.mozo_id === S.me.id).length;
 
   const htmlMesa = (m) => {
     const p = principal(m);
     const min = p.ocupada ? minutosDesde(p.ocupada_desde) : 0;
     const mostrarDatos = m.id === p.id && p.ocupada;
     return `<button class="mesa-p ${estadoMesa(p)}${min >= EXCEDIDO_MIN ? ' excedida' : ''}${unir?.has(m.id) ? ' sel' : ''}"
-        data-m="${m.id}" data-mia="${p.mozo_id === S.me.id ? 1 : 0}" style="${enPlano(m, H)}"
+        data-m="${m.id}" style="${enPlano(m, H)}"
         title="Mesa ${esc(m.etiqueta)} · ${esc(m.piso)}">
-      ${p.mozo_id === S.me.id && m.id === p.id ? '<span class="mia" aria-label="Asignada a ti">★</span>' : ''}
       <b>${esc(m.numero)}</b>
       ${mostrarDatos ? `<small>${dinero(p.por_cobrar)}</small><small class="t">${min >= EXCEDIDO_MIN ? '⚠ ' : ''}${duracion(min)}</small>` : ''}
     </button>`;
@@ -1890,7 +1887,6 @@ async function vMesas(main) {
           modo === 'mapa'
             ? `${pisos.length > 1 ? `<div class="segmento compacto">${pisos.map((p) => `<button data-piso="${esc(p)}" class="${p === S.salonPiso ? 'activo' : ''}">${esc(p)}</button>`).join('')}</div>` : ''}
               ${!editar && !unir ? '<button class="btn chico" id="modo-unir">🔗 Unir mesas</button>' : ''}
-              ${rol === 'mozo' ? `<button class="btn chico ${S.filtroMesas === 'mias' ? 'primario' : ''}" id="mis-mesas">★ Mis mesas <span class="cuenta">${mias}</span></button>` : ''}
               ${rol === 'admin' && !editar && !unir ? '<button class="btn chico" id="modo-editar">✏️ Editar plano</button>' : ''}
               <div class="conteos"><span class="libre">Libre ${cuenta('libre')}</span><span class="ocupada">Ocupada ${cuenta('ocupada')}</span><span class="cobrar">Por cobrar ${cuenta('cobrar')}</span></div>`
             : ''
@@ -1911,23 +1907,20 @@ async function vMesas(main) {
               </div>
               <aside class="excedidas">
                 <h4>⚠ Tiempo excedido (${excedidas.length})</h4>
-                ${excedidas.map((m) => `<button class="tarjeta" data-m="${m.id}"><b>Mesa ${esc(m.etiqueta)}</b><small>${esc(m.piso)} · ${esc(m.mozo_nombre || 'sin mozo')}</small><span class="t">${duracion(minutosDesde(m.ocupada_desde))}</span></button>`).join('') || `<div class="suave peq">Ninguna mesa pasa de ${EXCEDIDO_MIN} min.</div>`}
+                ${excedidas.map((m) => `<button class="tarjeta" data-m="${m.id}"><b>Mesa ${esc(m.etiqueta)}</b><small>${esc(m.piso)}</small><span class="t">${duracion(minutosDesde(m.ocupada_desde))}</span></button>`).join('') || `<div class="suave peq">Ninguna mesa pasa de ${EXCEDIDO_MIN} min.</div>`}
               </aside>
             </div>
-            <div class="leyenda-salon">Leyenda: <span><i class="libre"></i>Libre</span><span><i class="ocupada"></i>Ocupada</span><span><i class="cobrar"></i>Por cobrar (todo entregado)</span><span><i class="excedida"></i>Tiempo excedido (+${EXCEDIDO_MIN} min)</span><span><i class="unidas"></i>Mesas unidas</span>${rol === 'mozo' ? '<span>★ Asignada a ti</span>' : ''}</div>`
+            <div class="leyenda-salon">Leyenda: <span><i class="libre"></i>Libre</span><span><i class="ocupada"></i>Ocupada</span><span><i class="cobrar"></i>Por cobrar (todo entregado)</span><span><i class="excedida"></i>Tiempo excedido (+${EXCEDIDO_MIN} min)</span><span><i class="unidas"></i>Mesas unidas</span></div>`
       }
     </div>`;
 
   const otraVez = () => vMesas(main);
-  if (rol === 'mozo' && S.filtroMesas === 'mias')
-    $$('.mesa-p', main).forEach((el) => el.classList.toggle('tenue', el.dataset.mia !== '1'));
   $$('[data-modo]', main).forEach((b) => (b.onclick = () => ((S.salonModo = b.dataset.modo), (S.salonUnir = null), (S.salonEditar = false), otraVez())));
   $$('[data-piso]', main).forEach((b) => (b.onclick = () => ((S.salonPiso = b.dataset.piso), (S.salonUnir = unir && new Set()), otraVez())));
   const on = (sel, fn) => {
     const el = $(sel, main);
     if (el) el.onclick = fn;
   };
-  on('#mis-mesas', () => ((S.filtroMesas = S.filtroMesas === 'mias' ? 'todas' : 'mias'), otraVez()));
   on('#modo-unir', () => ((S.salonUnir = new Set()), otraVez()));
   on('#modo-editar', () => ((S.salonEditar = true), otraVez()));
   on('#cancelar-modo', () => ((S.salonUnir = null), (S.salonEditar = false), otraVez()));
@@ -1968,7 +1961,7 @@ async function vMesas(main) {
         const modal = abrirModal(`
           <div class="pila">
             <div class="fila entre"><h3>Mesa ${esc(p.etiqueta)} <span class="suave peq">· ${esc(p.piso)}</span></h3><button class="btn chico" data-x>✕</button></div>
-            <div class="suave">Mozo: ${esc(p.mozo_nombre || '-')}${cs.length ? ` · Consumo: <b>${dinero(total)}</b>` : ' · Libre'}</div>
+            <div class="suave">${cs.length ? `Consumo: <b>${dinero(total)}</b>` : 'Libre'}</div>
             ${cs.length && puede('admin', 'caja') ? `<button class="btn acento bloque" id="cobrar-mesa">💵 Cobrar mesa completa (${dinero(total)})</button>` : ''}
             ${cs.length ? `<button class="btn bloque" id="precuenta-mesa">🧾 Precuenta (${dinero(total)})</button>` : ''}
             ${cs.map(tarjetaComanda).join('')}
@@ -2608,7 +2601,7 @@ async function adminUsuarios(cont) {
         .map(
           (u) => `<div class="item">
             <div class="crecer"><b>${esc(u.nombre)}</b> ${u.en_turno ? '<span class="etiqueta pagada">EN TURNO</span>' : ''} ${!u.activo ? '<span class="etiqueta agotado">INACTIVO</span>' : ''}
-              <div class="suave peq">${esc(u.usuario)} · ${ROL_TXT[u.rol]}${u.rol === 'mozo' ? ` · ${u.mesas_asignadas} mesa(s)` : ''}</div></div>
+              <div class="suave peq">${esc(u.usuario)} · ${ROL_TXT[u.rol]}</div></div>
             <button class="btn chico" data-edit="${u.id}">Editar</button></div>`
         )
         .join('')}</div>
@@ -2637,43 +2630,26 @@ async function adminUsuarios(cont) {
 }
 
 async function adminMesas(cont) {
-  const [mesas, mozos] = await Promise.all([api('GET', '/api/mesas'), api('GET', '/api/mozos')]);
+  const mesas = await api('GET', '/api/mesas');
   const campos = [
     { n: 'numero', l: 'Número o nombre de mesa', req: true },
     { n: 'capacidad', l: 'Capacidad (personas)', t: 'number', paso: '1', def: 4 },
-    { n: 'mozo_id', l: 'Mozo asignado', t: 'select', op: [['', '— Sin asignar —'], ...mozos.map((m) => [m.id, m.nombre])] },
     { n: 'piso', l: 'Nivel', def: 'Nivel 1', lista: [...new Set(mesas.map((m) => m.piso))], ayuda: 'La ubicación en el plano se ajusta en Salón → Editar plano' },
     { n: 'activa', l: 'Activa', t: 'check', def: true },
   ];
   cont.innerHTML = `
     <div class="tarjeta">
       <div class="fila entre"><h3>Mesas (${mesas.length})</h3><button class="btn chico primario" id="nuevo">＋ Nueva</button></div>
-      <p class="suave peq">Cada mesa tiene un mozo a cargo, pero cualquier mozo puede tomar pedidos en cualquier mesa.</p>
       <div class="lista-admin">${mesas
         .map(
           (m) => `<div class="item">
             <div class="crecer"><b>Mesa ${esc(m.numero)}</b> ${m.ocupada ? '<span class="etiqueta llevar">OCUPADA</span>' : ''} ${!m.activa ? '<span class="etiqueta agotado">INACTIVA</span>' : ''}
               <div class="suave peq">${m.capacidad} personas · ${esc(m.piso)}</div></div>
-            <select class="entrada" style="width:auto;max-width:45%" data-asignar="${m.id}">
-              <option value="">Sin mozo</option>${mozos.map((z) => `<option value="${z.id}" ${z.id === m.mozo_id ? 'selected' : ''}>${esc(z.nombre)}</option>`).join('')}
-            </select>
             <button class="btn chico" data-edit="${m.id}">✏️</button></div>`
         )
         .join('')}</div>
     </div>`;
   $('#nuevo', cont).onclick = () => formulario({ titulo: 'Nueva mesa', campos, enviar: (d) => api('POST', '/api/mesas', d) });
-  $$('[data-asignar]', cont).forEach(
-    (s) =>
-      (s.onchange = async () => {
-        const m = mesas.find((x) => x.id === Number(s.dataset.asignar));
-        try {
-          await api('PUT', `/api/mesas/${m.id}`, { ...m, mozo_id: s.value || null });
-          toast(`Mesa ${m.numero} asignada`, 'ok', 1500);
-        } catch (e) {
-          toast(e.message, 'error');
-        }
-      })
-  );
   $$('[data-edit]', cont).forEach(
     (b) =>
       (b.onclick = () => {
@@ -2681,7 +2657,7 @@ async function adminMesas(cont) {
         formulario({
           titulo: `Mesa ${m.numero}`,
           campos,
-          valores: { ...m, mozo_id: m.mozo_id ?? '' },
+          valores: m,
           enviar: (d) => api('PUT', `/api/mesas/${m.id}`, d),
           eliminar: async () => {
             const r = await api('DELETE', `/api/mesas/${m.id}`);

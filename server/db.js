@@ -40,7 +40,6 @@ CREATE TABLE IF NOT EXISTS mesas (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   numero TEXT NOT NULL UNIQUE,
   capacidad INTEGER NOT NULL DEFAULT 4,
-  mozo_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
   activa INTEGER NOT NULL DEFAULT 1
 );
 
@@ -143,6 +142,15 @@ CREATE TABLE IF NOT EXISTS comanda_historial (
 );
 `);
 
+db.exec(`
+CREATE TABLE IF NOT EXISTS usuario_roles (
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  rol TEXT NOT NULL CHECK(rol IN ('admin','mozo','caja','cocina')),
+  PRIMARY KEY (usuario_id, rol)
+);
+CREATE INDEX IF NOT EXISTS idx_usuario_roles ON usuario_roles(usuario_id);
+`);
+
 // ---------- migración de bases creadas con la versión anterior ----------
 function agregarColumna(tabla, columna, definicion) {
   const existe = db.prepare(`PRAGMA table_info(${tabla})`).all().some((c) => c.name === columna);
@@ -225,6 +233,9 @@ CREATE INDEX IF NOT EXISTS idx_turnos_fecha ON turnos(fecha);
 CREATE INDEX IF NOT EXISTS idx_cobros_fecha ON cobros(fecha);
 `);
 
+// Migración: poblar usuario_roles desde usuarios.rol (bases anteriores a esta versión)
+db.exec(`INSERT OR IGNORE INTO usuario_roles (usuario_id, rol) SELECT id, rol FROM usuarios`);
+
 // ---------- utilidades ----------
 const z = (n) => String(n).padStart(2, '0');
 function hoy(d = new Date()) {
@@ -277,16 +288,18 @@ function sembrar() {
     const insU = db.prepare(
       "INSERT INTO usuarios (nombre, usuario, pin_hash, rol, creado_en, password_hash) VALUES (?,?,?,?,?,'')"
     );
-    insU.run('Administrador', 'admin', hashPassword(PIN_INICIAL), 'admin', ahora());
-    const mozos = ['Mozo Uno', 'Mozo Dos', 'Mozo Tres'].map(
-      (nombre, i) => insU.run(nombre, `mozo${i + 1}`, hashPassword(PIN_INICIAL), 'mozo', ahora()).lastInsertRowid
-    );
-    insU.run('Caja', 'caja1', hashPassword(PIN_INICIAL), 'caja', ahora());
-    insU.run('Cocina', 'cocina1', hashPassword(PIN_INICIAL), 'cocina', ahora());
+    const insUR = db.prepare('INSERT OR IGNORE INTO usuario_roles (usuario_id, rol) VALUES (?,?)');
+    const ins = (nombre, usuario, rol) => {
+      const id = insU.run(nombre, usuario, hashPassword(PIN_INICIAL), rol, ahora()).lastInsertRowid;
+      insUR.run(id, rol);
+      return id;
+    };
+    ins('Administrador', 'admin', 'admin');
+    const mozos = ['Mozo Uno', 'Mozo Dos', 'Mozo Tres'].map((nombre, i) => ins(nombre, `mozo${i + 1}`, 'mozo'));
+    ins('Caja', 'caja1', 'caja');
+    ins('Cocina', 'cocina1', 'cocina');
 
     aplicarPlanoInicial();
-    const asignar = db.prepare('UPDATE mesas SET mozo_id = ? WHERE numero = ?');
-    PLANO_MESAS.forEach(([numero], i) => asignar.run(mozos[i < 4 ? 0 : i < 10 ? 1 : 2], numero));
 
     // Los platos y guarniciones se cargan desde carta/platos-tradicionales.json (ver server/carta-inicial.js)
   });

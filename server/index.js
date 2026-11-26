@@ -101,12 +101,14 @@ function auth(req, res, next) {
     )
     .get(token);
   if (!u) return next(new HttpError(401, 'Sesión expirada'));
+  u.roles = db.prepare('SELECT rol FROM usuario_roles WHERE usuario_id = ?').all(u.id).map((r) => r.rol);
+  if (!u.roles.length) u.roles = [u.rol];
   req.user = u;
   req.token = token;
   next();
 }
 const rol = (...roles) => (req, res, next) =>
-  roles.includes(req.user.rol) ? next() : next(new HttpError(403, 'No tiene permiso para esta acción'));
+  req.user.roles.some((r) => roles.includes(r)) ? next() : next(new HttpError(403, 'No tiene permiso para esta acción'));
 
 function abrirTurno(usuarioId) {
   const abierto = db.prepare('SELECT * FROM turnos WHERE usuario_id = ? AND fin IS NULL').get(usuarioId);
@@ -152,7 +154,8 @@ app.post(
     const turno = abrirTurno(u.id);
     emitir('turnos');
     res.setHeader('Set-Cookie', `token=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`);
-    return { id: u.id, nombre: u.nombre, usuario: u.usuario, rol: u.rol, turno };
+    const roles = db.prepare('SELECT rol FROM usuario_roles WHERE usuario_id = ?').all(u.id).map((r) => r.rol);
+    return { id: u.id, nombre: u.nombre, usuario: u.usuario, rol: u.rol, roles: roles.length ? roles : [u.rol], turno };
   })
 );
 
@@ -218,7 +221,6 @@ app.get(
     db
       .prepare(
         `SELECT ${COLS_USUARIO},
-          (SELECT COUNT(*) FROM mesas m WHERE m.mozo_id = usuarios.id) AS mesas_asignadas,
           EXISTS (SELECT 1 FROM turnos t WHERE t.usuario_id = usuarios.id AND t.fin IS NULL AND t.fecha = ?) AS en_turno
          FROM usuarios ORDER BY activo DESC, rol, nombre`
       )
@@ -266,8 +268,6 @@ app.put(
       fallos.delete(id); // el admin cambia el PIN: se desbloquea
     }
     if (!u.activo) db.prepare('DELETE FROM sesiones WHERE usuario_id = ?').run(id);
-    if (u.rol !== 'mozo') db.prepare('UPDATE mesas SET mozo_id = NULL WHERE mozo_id = ?').run(id);
-    emitir('mesas');
     return db.prepare(`SELECT ${COLS_USUARIO} FROM usuarios WHERE id = ?`).get(id);
   })
 );
@@ -282,27 +282,18 @@ app.delete(
     if (tieneHistoria) {
       db.prepare('UPDATE usuarios SET activo = 0 WHERE id = ?').run(id);
       db.prepare('DELETE FROM sesiones WHERE usuario_id = ?').run(id);
-      db.prepare('UPDATE mesas SET mozo_id = NULL WHERE mozo_id = ?').run(id);
-      emitir('mesas');
       return { ok: true, desactivado: true };
     }
     db.prepare('DELETE FROM usuarios WHERE id = ?').run(id);
-    emitir('mesas');
     return { ok: true };
   })
-);
-
-app.get(
-  '/api/mozos',
-  rol('admin', 'caja'),
-  ruta(() => db.prepare("SELECT id, nombre FROM usuarios WHERE rol = 'mozo' AND activo = 1 ORDER BY nombre").all())
 );
 
 // ---------------- mesas ----------------
 function listarMesas() {
   const mesas = db
     .prepare(
-      `SELECT m.*, u.nombre AS mozo_nombre,
+      `SELECT m.*,
         (SELECT COUNT(*) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
            AND c.estado <> 'cancelado' AND c.pagada = 0) AS comandas_abiertas,
         (SELECT COALESCE(SUM(c.total),0) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
@@ -311,7 +302,7 @@ function listarMesas() {
            AND c.estado NOT IN ('cancelado','entregado') AND c.pagada = 0) AS por_entregar,
         (SELECT MIN(c.creado_en) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
            AND c.estado <> 'cancelado' AND c.pagada = 0) AS ocupada_desde
-       FROM mesas m LEFT JOIN usuarios u ON u.id = m.mozo_id
+       FROM mesas m
        ORDER BY CAST(m.numero AS INTEGER), m.numero`
     )
     .all(hoy(), hoy(), hoy(), hoy())
@@ -359,12 +350,10 @@ function validarMesa(b) {
   const numero = texto(b.numero, 20);
   if (!numero) fail(400, 'El número/nombre de mesa es obligatorio');
   const capacidad = Math.max(1, Math.min(50, parseInt(b.capacidad, 10) || 4));
-  const mozo_id = b.mozo_id ? Number(b.mozo_id) : null;
-  if (mozo_id && !db.prepare("SELECT 1 FROM usuarios WHERE id = ? AND rol = 'mozo'").get(mozo_id)) fail(400, 'El mozo no existe');
   const piso = texto(b.piso, 30) || 'Nivel 1';
   const zona = texto(b.zona, 40) || 'Salón';
   const forma = ['cuadrada', 'redonda', 'rectangular'].includes(b.forma) ? b.forma : 'rectangular';
-  return { numero, capacidad, mozo_id, piso, zona, forma, activa: b.activa === undefined ? 1 : bool(b.activa) };
+  return { numero, capacidad, piso, zona, forma, activa: b.activa === undefined ? 1 : bool(b.activa) };
 }
 
 app.post(
@@ -374,8 +363,8 @@ app.post(
     const m = validarMesa(req.body);
     if (db.prepare('SELECT 1 FROM mesas WHERE numero = ?').get(m.numero)) fail(409, 'Ya existe una mesa con ese número');
     const id = db
-      .prepare('INSERT INTO mesas (numero, capacidad, mozo_id, piso, zona, forma, activa) VALUES (?,?,?,?,?,?,?)')
-      .run(m.numero, m.capacidad, m.mozo_id, m.piso, m.zona, m.forma, m.activa).lastInsertRowid;
+      .prepare('INSERT INTO mesas (numero, capacidad, piso, zona, forma, activa) VALUES (?,?,?,?,?,?)')
+      .run(m.numero, m.capacidad, m.piso, m.zona, m.forma, m.activa).lastInsertRowid;
     emitir('mesas');
     return db.prepare('SELECT * FROM mesas WHERE id = ?').get(id);
   })
@@ -389,8 +378,8 @@ app.put(
     if (!db.prepare('SELECT 1 FROM mesas WHERE id = ?').get(id)) fail(404, 'Mesa no encontrada');
     const m = validarMesa(req.body);
     if (db.prepare('SELECT 1 FROM mesas WHERE numero = ? AND id <> ?').get(m.numero, id)) fail(409, 'Ya existe una mesa con ese número');
-    db.prepare('UPDATE mesas SET numero=?, capacidad=?, mozo_id=?, piso=?, zona=?, forma=?, activa=? WHERE id=?').run(
-      m.numero, m.capacidad, m.mozo_id, m.piso, m.zona, m.forma, m.activa, id
+    db.prepare('UPDATE mesas SET numero=?, capacidad=?, piso=?, zona=?, forma=?, activa=? WHERE id=?').run(
+      m.numero, m.capacidad, m.piso, m.zona, m.forma, m.activa, id
     );
     emitir('mesas');
     return db.prepare('SELECT * FROM mesas WHERE id = ?').get(id);
@@ -717,7 +706,7 @@ app.post(
 
 // ---------------- comandas ----------------
 const SQL_COMANDA = `
-  SELECT c.*, COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero) AS mesa_numero, m.piso AS mesa_piso, u.nombre AS mozo_nombre, m.mozo_id AS mesa_mozo_id,
+  SELECT c.*, COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero) AS mesa_numero, m.piso AS mesa_piso, u.nombre AS mozo_nombre,
     co.metodo AS metodo_pago, co.comprobante AS cobro_comprobante,
     (SELECT s.id FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_id,
     (SELECT s.serie || '-' || s.numero FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_numero,
@@ -783,8 +772,8 @@ app.get(
     else if (vista === 'activas') where.push("c.estado NOT IN ('entregado','cancelado')");
     else if (vista === 'por_cobrar') where.push("c.estado <> 'cancelado' AND c.pagada = 0");
     if (req.query.mias === '1') {
-      where.push('(c.mozo_id = ? OR m.mozo_id = ?)');
-      params.push(req.user.id, req.user.id);
+      where.push('c.mozo_id = ?');
+      params.push(req.user.id);
     }
     if (req.query.mesa_id) {
       where.push('c.mesa_id = ?');
@@ -897,12 +886,7 @@ app.post(
     const items = prepararItems(req.body.items, cab.tipo);
     const agotado = items.find((i) => !i.disponible);
     if (agotado) fail(400, `"${agotado.nombre}" está agotado`);
-    let mozoId = req.user.id;
-    if (req.user.rol !== 'mozo' && cab.tipo === 'local') {
-      // si la crea admin/caja, se asigna al mozo de la mesa (si tiene)
-      const mesa = db.prepare('SELECT mozo_id FROM mesas WHERE id = ?').get(cab.mesa_id);
-      if (mesa?.mozo_id) mozoId = mesa.mozo_id;
-    }
+    const mozoId = req.user.id;
     const id = tx(() => {
       const fecha = hoy();
       const { sig } = db.prepare('SELECT COALESCE(MAX(numero_dia),0)+1 AS sig FROM comandas WHERE fecha = ?').get(fecha);
