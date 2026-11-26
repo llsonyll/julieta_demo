@@ -1147,7 +1147,7 @@ async function vEditorComanda(main, r, esRecarga) {
   const principalDe = (id) => todasMesas.find((m) => m.id === id)?.principal_id || null;
   // el menú se cobra a precio fijo, sea cual sea el segundo
   for (const p of carta.menu) p.precio = carta.precio_menu;
-  const productos = [...carta.menu, ...carta.extras];
+  const productos = [...carta.menu, ...carta.extras, ...(carta.bebidas || [])];
   const porId = new Map(productos.map((p) => [p.id, p]));
   const guarniciones = carta.guarniciones; // activas
   const guarPorId = new Map(guarniciones.map((g) => [g.id, g]));
@@ -1188,6 +1188,7 @@ async function vEditorComanda(main, r, esRecarga) {
 
   function textoLinea(l) {
     const p = porId.get(l.producto_id);
+    if (p.tipo === 'bebidas') return '';
     const partes = p.tipo === 'menu' && carta.sopa ? [`Sopa: ${esc(carta.sopa.nombre)}`] : [];
     if (p.guarnicion_base_id) {
       if (!l.base) partes.push(`<b>sin ${esc(p.guarnicion_base.toLowerCase())}</b>`);
@@ -1214,22 +1215,23 @@ async function vEditorComanda(main, r, esRecarga) {
       ...(p.guarnicion_base_id ? [guarPorId.get(p.guarnicion_base_id) || { id: p.guarnicion_base_id, nombre: p.guarnicion_base }] : []),
       ...guarniciones.filter((g) => g.id !== p.guarnicion_base_id),
     ];
+    const htmlGuarnicion = p.tipo !== 'bebidas' ? `
+      <div><div class="etiqueta-campo">Guarnición (${p.guarnicion_base_id ? `por defecto: ${esc(p.guarnicion_base)}` : 'opcional'})</div>
+        <div class="opciones">${opcionesBase
+          .map((g) => `<button type="button" class="chip ${g.id === base ? 'activo' : ''}" data-base="${g.id}">${esc(g.nombre)}</button>`)
+          .join('')}<button type="button" class="chip ${!base ? 'activo' : ''}" data-base="">Sin guarnición</button></div></div>
+      ${p.con_eleccion
+        ? `<div><div class="etiqueta-campo">Guarnición a elección${delDia.length ? ' (de hoy)' : ''}</div>
+           <div class="opciones">${opcionesEleccion
+             .map((g) => `<button type="button" class="chip ${g.id === eleccion ? 'activo' : ''}" data-eleccion="${g.id}">${esc(g.nombre)}</button>`)
+             .join('')}<button type="button" class="chip ${idx != null && !eleccion ? 'activo' : ''}" data-eleccion="0">Ninguna</button></div></div>`
+        : ''
+      }` : '';
     const m = abrirModal(`
       <div class="pila">
         <div class="fila entre"><h3>${esc(p.nombre)}</h3><button class="btn chico" data-x>✕</button></div>
         <div class="suave">${dinero(p.precio)}${p.tipo === 'menu' && carta.sopa ? ` · menú con sopa: ${esc(carta.sopa.nombre)}` : ''}</div>
-        <div><div class="etiqueta-campo">Guarnición (${p.guarnicion_base_id ? `por defecto: ${esc(p.guarnicion_base)}` : 'opcional'})</div>
-          <div class="opciones">${opcionesBase
-            .map((g) => `<button type="button" class="chip ${g.id === base ? 'activo' : ''}" data-base="${g.id}">${esc(g.nombre)}</button>`)
-            .join('')}<button type="button" class="chip ${!base ? 'activo' : ''}" data-base="">Sin guarnición</button></div></div>
-        ${
-          p.con_eleccion
-            ? `<div><div class="etiqueta-campo">Guarnición a elección${delDia.length ? ' (de hoy)' : ''}</div>
-               <div class="opciones">${opcionesEleccion
-                 .map((g) => `<button type="button" class="chip ${g.id === eleccion ? 'activo' : ''}" data-eleccion="${g.id}">${esc(g.nombre)}</button>`)
-                 .join('')}<button type="button" class="chip ${idx != null && !eleccion ? 'activo' : ''}" data-eleccion="0">Ninguna</button></div></div>`
-            : ''
-        }
+        ${htmlGuarnicion}
         <label class="campo"><span>Nota para cocina (opcional)</span>
           <input id="nota-plato" value="${esc(l.nota)}" placeholder="Ej: bien cocido, sin cebolla" maxlength="150" autocomplete="off"></label>
         <div class="fila entre">
@@ -1281,7 +1283,7 @@ async function vEditorComanda(main, r, esRecarga) {
   }
 
   // Carta (pestaña) y categoría elegidas en el panel izquierdo
-  let pestana = carta.menu.length ? 'menu' : 'extra';
+  let pestana = carta.menu.length ? 'menu' : carta.extras.length ? 'extra' : 'bebidas';
   let categoria = 'todos';
   let busqueda = '';
   const mesaSel = () => mesas.find((m) => m.id === b.mesa_id);
@@ -1289,7 +1291,7 @@ async function vEditorComanda(main, r, esRecarga) {
 
   function tarjetaPlato(p) {
     const n = cantidadDe(p.id);
-    const guar = [p.guarnicion_base ? `con ${p.guarnicion_base.toLowerCase()}` : '', p.con_eleccion ? '+ a elección' : ''].filter(Boolean).join(' ');
+    const guar = p.tipo !== 'bebidas' ? [p.guarnicion_base ? `con ${p.guarnicion_base.toLowerCase()}` : '', p.con_eleccion ? '+ a elección' : ''].filter(Boolean).join(' ') : '';
     return `
       <button type="button" class="plato ${!p.disponible ? 'sin-stock' : ''}" data-mas="${p.id}" data-pid="${p.id}" ${!p.disponible ? 'disabled' : ''}>
         <span class="cuenta ${n ? '' : 'oculto'}">${n}</span>
@@ -1300,7 +1302,7 @@ async function vEditorComanda(main, r, esRecarga) {
   }
 
   function pintarCarta() {
-    const deCarta = (pestana === 'menu' ? carta.menu : carta.extras).filter(vendible);
+    const deCarta = (pestana === 'menu' ? carta.menu : pestana === 'bebidas' ? (carta.bebidas || []) : carta.extras).filter(vendible);
     const cats = [...new Set(deCarta.map((p) => p.categoria || 'Otros'))];
     if (!cats.includes(categoria)) categoria = 'todos';
     const q = busqueda.toLowerCase();
@@ -1405,6 +1407,7 @@ async function vEditorComanda(main, r, esRecarga) {
             <div class="pestanas">
               <button type="button" data-pestana="menu">Menú del día</button>
               <button type="button" data-pestana="extra">Extras</button>
+              <button type="button" data-pestana="bebidas">Bebidas</button>
             </div>
             <div class="fila envolver">
               <input class="entrada" id="buscar" type="search" placeholder="🔎 Buscar plato…" autocomplete="off" value="${esc(busqueda)}" style="max-width:240px">
@@ -2086,13 +2089,14 @@ async function vCarta(main) {
   const puedeAgotar = puede('admin', 'cocina', 'caja');
   const carta = await api('GET', `/api/carta${admin ? '?completo=1' : ''}`);
   const f = S.filtroCarta || 'todas';
-  const todos = [...carta.sopas, ...carta.menu, ...carta.extras];
+  const todos = [...(carta.sopas || []), ...carta.menu, ...carta.extras, ...(carta.bebidas || [])];
   const lista = todos.filter((p) => f === 'todas' || p.tipo === f);
   const delDia = carta.guarniciones.filter((g) => g.activo && g.del_dia);
   const aEleccion = (delDia.length ? delDia : carta.guarniciones.filter((g) => g.activo && g.eleccion_habitual)).map((g) => g.nombre);
   const menuHoy = carta.sopa ? carta.menu.filter((p) => p.activo && p.en_carta).length : 0;
   const extrasActivos = carta.extras.filter((p) => p.activo).length;
-  // Estado: sopa / segundo variable = "sale hoy"; segundo fijo y extras = activo
+  const bebidasActivos = (carta.bebidas || []).filter((p) => p.activo).length;
+  // Estado: sopa / segundo variable = "sale hoy"; segundo fijo, extras y bebidas = activo
   const delDiaMenu = (p) => p.tipo === 'menu' && p.menu_rol !== 'fijo';
   const encendido = (p) => (delDiaMenu(p) ? p.en_carta && p.activo : p.activo);
   const interruptor = (p) =>
@@ -2101,13 +2105,15 @@ async function vCarta(main) {
            aria-label="${delDiaMenu(p) ? 'Sale hoy' : 'Activo'}: ${esc(p.nombre)}"></button>`
       : '';
   const guarnicion = (p) =>
-    p.guarnicion_base || p.con_eleccion
-      ? `${p.guarnicion_base ? esc(p.guarnicion_base) : '—'}<div class="suave peq">${p.con_eleccion ? '+ 1 a elección (sin costo)' : 'cambiable'}</div>`
-      : '<span class="suave">Sin guarnición</span>';
+    p.tipo === 'bebidas'
+      ? '<span class="suave">—</span>'
+      : p.guarnicion_base || p.con_eleccion
+        ? `${p.guarnicion_base ? esc(p.guarnicion_base) : '—'}<div class="suave peq">${p.con_eleccion ? '+ 1 a elección (sin costo)' : 'cambiable'}</div>`
+        : '<span class="suave">Sin guarnición</span>';
   const fila = (p) => `
     <tr data-buscar="${esc((p.nombre + ' ' + p.categoria + ' ' + p.descripcion).toLowerCase())}" class="${encendido(p) ? '' : 'apagado'}">
       <td><b>${esc(p.nombre)}</b>${p.descripcion ? `<div class="suave peq recorte">${esc(p.descripcion)}</div>` : ''}</td>
-      <td>${p.tipo === 'menu' ? `Menú · ${ROL_MENU[p.menu_rol]}` : 'Extras'}<div class="suave peq">${esc(p.categoria)}</div></td>
+      <td>${p.tipo === 'menu' ? `Menú · ${ROL_MENU[p.menu_rol]}` : p.tipo === 'bebidas' ? 'Bebidas' : 'Extras'}<div class="suave peq">${esc(p.categoria)}</div></td>
       <td>${guarnicion(p)}</td>
       <td class="num precio">${p.tipo === 'menu' ? `<span class="suave">menú ${dinero(carta.precio_menu)}</span>` : p.precio > 0 ? dinero(p.precio) : '<span class="suave">Sin precio</span>'}</td>
       ${admin ? `<td>${interruptor(p)}</td>` : ''}
@@ -2135,10 +2141,11 @@ async function vCarta(main) {
       <div class="fila envolver">
         ${tarjetaCarta('menu', 'Menú del día', carta.sopa ? `${dinero(carta.precio_menu)} · ${esc(carta.sopa.nombre)} + ${menuHoy} segundos` : 'Hoy sin menú (falta la sopa)')}
         ${tarjetaCarta('extra', 'Extras', `${extrasActivos} platos activos · carta fija`)}
+        ${tarjetaCarta('bebidas', 'Bebidas', `${bebidasActivos} bebidas activas · carta fija`)}
         <div class="tarjeta carta-resumen"><b>A elección hoy</b><small class="suave">${esc(aEleccion.join(', ') || 'cualquier guarnición')}</small></div>
       </div>
       <div class="fila entre envolver">
-        <div class="segmento compacto">${[['todas', 'Todas'], ['menu', 'Menú del día'], ['extra', 'Extras']]
+        <div class="segmento compacto">${[['todas', 'Todas'], ['menu', 'Menú del día'], ['extra', 'Extras'], ['bebidas', 'Bebidas']]
           .map(([v, t]) => `<button class="${f === v ? 'activo' : ''}" data-chip="fc" data-v="${v}">${t}</button>`)
           .join('')}</div>
         <input class="entrada" id="buscar" type="search" placeholder="🔎 Buscar plato…" autocomplete="off" style="max-width:280px">
@@ -2162,7 +2169,7 @@ async function vCarta(main) {
   };
   if (!admin) return;
   const buscar = (id) => todos.find((p) => p.id === Number(id));
-  $('#nuevo', main).onclick = () => formularioPlato(null, { tipo: f === 'extra' ? 'extra' : 'variable' });
+  $('#nuevo', main).onclick = () => formularioPlato(null, { tipo: f === 'extra' ? 'extra' : f === 'bebidas' ? 'bebidas' : 'variable' });
   $('#planificar', main).onclick = () => ((S.adminTab = 'carta'), ir('#/admin'));
   $('#guarniciones', main).onclick = () => ((S.adminTab = 'guarniciones'), ir('#/admin'));
   $$('[data-editar-plato]', main).forEach((x) => (x.onclick = () => formularioPlato(buscar(x.dataset.editarPlato))));
@@ -2228,7 +2235,7 @@ async function vReporte(main) {
         ${tabla(['Mesa', '#Comandas', '#Total'], r.mesas.map((m) => [esc(m.mesa), m.comandas, dinero(m.total)]))}
       </div>
       <div class="tarjeta"><h3>Platos más vendidos</h3>
-        ${tabla(['Plato', 'Tipo', '#Cant.', '#Total'], r.productos.map((p) => [esc(p.nombre), p.tipo === 'menu' ? 'Menú' : 'Extra', p.cantidad, dinero(p.total)]))}
+        ${tabla(['Plato', 'Tipo', '#Cant.', '#Total'], r.productos.map((p) => [esc(p.nombre), p.tipo === 'menu' ? 'Menú' : p.tipo === 'bebidas' ? 'Bebida' : 'Extra', p.cantidad, dinero(p.total)]))}
       </div>
       <div class="tarjeta"><h3>Guarniciones servidas</h3>
         ${tabla(['Guarnición', '#Porciones'], r.guarniciones.map((g) => [esc(g.nombre), g.cantidad]))}
@@ -2395,20 +2402,21 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
         ['fijo', 'Menú · segundo fijo (sale todos los días con menú)'],
         ['sopa', 'Menú · sopa (una por día)'],
         ['extra', 'Extra (carta fija, precio propio)'],
+        ['bebidas', 'Bebida (carta fija, precio propio)'],
       ],
       def: tipo || 'variable',
     },
-    { n: 'precio', l: `Precio (${S.config.moneda}) — solo extras`, t: 'number', paso: '0.10', ayuda: 'Sopa y segundos del menú se cobran al precio fijo del menú.' },
+    { n: 'precio', l: `Precio (${S.config.moneda}) — solo extras y bebidas`, t: 'number', paso: '0.10', ayuda: 'Sopa y segundos del menú se cobran al precio fijo del menú.' },
     {
       n: 'guarnicion_base_id',
       l: 'Guarnición por defecto',
       t: 'select',
       op: [['', '— Sin guarnición —'], ...guarniciones.filter((g) => g.activo).map((g) => [g.id, g.nombre])],
-      def: guarniciones.find((g) => g.activo && g.nombre.toLowerCase() === 'arroz')?.id ?? '',
+      def: tipo === 'bebidas' ? '' : (guarniciones.find((g) => g.activo && g.nombre.toLowerCase() === 'arroz')?.id ?? ''),
       ayuda: 'El mozo la puede cambiar por otra al tomar el pedido.',
     },
-    { n: 'con_eleccion', l: 'Lleva una guarnición a elección', t: 'check', def: true, ayuda: 'Ej: picante de lisas, kapchi… (las que se ofrecen ese día)' },
-    { n: 'categoria', l: 'Categoría (para ordenar la carta)', lista: categorias, def: tipo === 'extra' ? 'Fondos' : 'Menú' },
+    { n: 'con_eleccion', l: 'Lleva una guarnición a elección', t: 'check', def: tipo !== 'bebidas', ayuda: 'Ej: picante de lisas, kapchi… (las que se ofrecen ese día)' },
+    { n: 'categoria', l: 'Categoría (para ordenar la carta)', lista: categorias, def: tipo === 'bebidas' ? 'Bebidas' : tipo === 'extra' ? 'Fondos' : 'Menú del día' },
     { n: 'para_local', l: 'Se sirve en mesa', t: 'check', def: true },
     { n: 'para_llevar', l: 'Se vende para llevar', t: 'check', def: true },
     { n: 'disponible', l: 'Hay stock (desmarcar = agotado)', t: 'check', def: true },
@@ -2418,9 +2426,9 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
   const f = formulario({
     titulo: p ? `Editar: ${p.nombre}` : 'Nuevo plato',
     campos,
-    valores: p ? { ...p, tipo: p.tipo === 'menu' ? p.menu_rol : 'extra', guarnicion_base_id: p.guarnicion_base_id ?? '' } : {},
+    valores: p ? { ...p, tipo: p.tipo === 'menu' ? p.menu_rol : p.tipo, guarnicion_base_id: p.guarnicion_base_id ?? '' } : {},
     enviar: (d) => {
-      d = { ...d, tipo: d.tipo === 'extra' ? 'extra' : 'menu', menu_rol: d.tipo };
+      d = { ...d, tipo: ['extra', 'bebidas'].includes(d.tipo) ? d.tipo : 'menu', menu_rol: ['extra', 'bebidas'].includes(d.tipo) ? 'variable' : d.tipo };
       return p ? api('PUT', `/api/productos/${p.id}`, d) : api('POST', '/api/productos', { ...d, agregar_a_fecha: fecha || true });
     },
     eliminar: p
@@ -2431,13 +2439,13 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
         }
       : null,
   });
-  // precio solo para extras; la sopa del menú no lleva guarnición
+  // precio solo para extras y bebidas; sopa y bebidas no llevan guarnición
   const el = f.elements;
   const ajustar = () => {
-    el.precio.closest('label').style.display = el.tipo.value === 'extra' ? '' : 'none';
-    const sopa = el.tipo.value === 'sopa';
-    if (sopa) (el.guarnicion_base_id.value = ''), (el.con_eleccion.checked = false);
-    el.guarnicion_base_id.disabled = el.con_eleccion.disabled = sopa;
+    el.precio.closest('label').style.display = ['extra', 'bebidas'].includes(el.tipo.value) ? '' : 'none';
+    const sinGuar = el.tipo.value === 'sopa' || el.tipo.value === 'bebidas';
+    if (sinGuar) (el.guarnicion_base_id.value = ''), (el.con_eleccion.checked = false);
+    el.guarnicion_base_id.disabled = el.con_eleccion.disabled = sinGuar;
   };
   el.tipo.onchange = ajustar;
   ajustar();
@@ -2506,6 +2514,17 @@ async function adminCarta(cont) {
           )
           .join('')}
       </div>
+      <div class="tarjeta">
+        <div class="fila entre"><h3>🍹 Bebidas (salen todos los días)</h3><button class="btn chico" id="ver-bebidas">Editar bebidas</button></div>
+        ${(carta.bebidas || [])
+          .filter((p) => p.activo)
+          .map(
+            (p) => `<div class="toggle-fila"><div class="crecer"><div class="nombre">${esc(p.nombre)} ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''}</div>
+              <div class="suave peq">${dinero(p.precio)} · ${esc(p.categoria)}</div></div>
+              <button class="btn chico ${p.disponible ? '' : 'ok'}" data-accion="disponible" data-id="${p.id}" data-v="${p.disponible ? 0 : 1}">${p.disponible ? 'Agotar' : 'Hay'}</button></div>`
+          )
+          .join('') || '<div class="suave">Sin bebidas. Agregue desde "Editar bebidas".</div>'}
+      </div>
     </div>`;
   const recargar = () => adminCarta(cont);
   $('#fecha', cont).onchange = (e) => {
@@ -2572,6 +2591,11 @@ async function adminCarta(cont) {
     S.filtroPlatos = 'extra';
     vAdmin($('#vista'));
   };
+  $('#ver-bebidas', cont).onclick = () => {
+    S.adminTab = 'platos';
+    S.filtroPlatos = 'bebidas';
+    vAdmin($('#vista'));
+  };
 }
 
 /** Catálogo de platos */
@@ -2582,13 +2606,13 @@ async function adminPlatos(cont) {
   cont.innerHTML = `
     <div class="tarjeta pila">
       <div class="fila entre envolver"><h3>Platos (${lista.length})</h3><button class="btn chico primario" id="nuevo">＋ Nuevo plato</button></div>
-      ${chips([['todos', 'Todos'], ['menu', 'Menú del día'], ['extra', 'Extras']], f, 'fp')}
+      ${chips([['todos', 'Todos'], ['menu', 'Menú del día'], ['extra', 'Extras'], ['bebidas', 'Bebidas']], f, 'fp')}
       <input class="entrada" id="buscar" placeholder="🔎 Buscar…" autocomplete="off">
       <div class="lista-admin">${
         lista
           .map(
             (p) => `<div class="item" data-buscar="${esc(p.nombre.toLowerCase())}">
-              <div class="crecer"><b>${esc(p.nombre)}</b> <span class="etiqueta">${p.tipo === 'menu' ? `MENÚ · ${ROL_MENU[p.menu_rol].toUpperCase()}` : 'EXTRA'}</span>
+              <div class="crecer"><b>${esc(p.nombre)}</b> <span class="etiqueta">${p.tipo === 'menu' ? `MENÚ · ${ROL_MENU[p.menu_rol].toUpperCase()}` : p.tipo === 'bebidas' ? 'BEBIDA' : 'EXTRA'}</span>
                 ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''} ${!p.activo ? '<span class="etiqueta">INACTIVO</span>' : ''}
                 <div class="suave peq">${p.tipo === 'menu' ? 'precio del menú' : dinero(p.precio)} · ${esc(p.categoria)}${p.guarnicion_base ? ` · con ${esc(p.guarnicion_base.toLowerCase())}` : ''}${p.con_eleccion ? ' + a elección' : ''}</div></div>
               <button class="btn chico" data-edit="${p.id}">✏️</button></div>`
@@ -2604,7 +2628,7 @@ async function adminPlatos(cont) {
     const q = e.target.value.trim().toLowerCase();
     $$('.item', cont).forEach((x) => x.classList.toggle('oculto', q && !x.dataset.buscar.includes(q)));
   };
-  $('#nuevo', cont).onclick = () => formularioPlato(null, { tipo: f === 'extra' ? 'extra' : 'variable' });
+  $('#nuevo', cont).onclick = () => formularioPlato(null, { tipo: f === 'extra' ? 'extra' : f === 'bebidas' ? 'bebidas' : 'variable' });
   $$('[data-edit]', cont).forEach((x) => (x.onclick = () => formularioPlato(productos.find((p) => p.id === Number(x.dataset.edit)))));
 }
 
