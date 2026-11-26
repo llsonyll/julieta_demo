@@ -52,6 +52,14 @@ const TAB_INFO = {
   reporte: ['Reportes', 'Análisis', '<path d="M3 3v18h18M8 17V9M13 17V5M18 17v-3"/>'],
   admin: ['Configuración', 'Sistema', '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'],
 };
+// Tabs disponibles según todos los roles del usuario (unión ordenada)
+function tabsDelUsuario() {
+  const roles = S.me?.roles || [S.me?.rol];
+  const orden = ['mesas', 'comandas', 'tickets', 'comprobantes', 'carta', 'reporte', 'admin'];
+  const todos = new Set(roles.flatMap((r) => TABS[r] || []));
+  return orden.filter((t) => todos.has(t));
+}
+
 const svg = (d, t = 20) =>
   `<svg width="${t}" height="${t}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 
@@ -66,7 +74,7 @@ function fechaISO(d) {
 }
 const fechaHoy = () => fechaISO(new Date(ahoraServidor()));
 const diaAnterior = (f) => fechaISO(new Date(parseFecha(`${f} 12:00:00`).getTime() - 86400000));
-const puede = (...roles) => S.me && roles.includes(S.me.rol);
+const puede = (...roles) => S.me && (S.me.roles || [S.me.rol]).some((r) => roles.includes(r));
 const tactil = () => matchMedia('(pointer: coarse)').matches;
 
 // ---------------- API ----------------
@@ -250,6 +258,12 @@ function formulario({ titulo, campos, valores = {}, enviar, eliminar, textoElimi
       if (c.t === 'check')
         return `<label class="check"><input type="checkbox" name="${c.n}" ${v ? 'checked' : ''}> ${esc(c.l)}</label>
           ${c.ayuda ? `<small class="suave ayuda-check">${esc(c.ayuda)}</small>` : ''}`;
+      if (c.t === 'checks') {
+        const vals = Array.isArray(v) ? v.map(String) : [];
+        return `<label class="campo"><span>${esc(c.l)}</span><div data-checks="${c.n}">${c.op
+          .map(([ov, ot]) => `<label class="check"><input type="checkbox" value="${esc(ov)}" ${vals.includes(String(ov)) ? 'checked' : ''}> ${esc(ot)}</label>`)
+          .join('')}</div></label>`;
+      }
       let control;
       if (c.t === 'select')
         control = `<select name="${c.n}">${c.op
@@ -290,13 +304,17 @@ function formulario({ titulo, campos, valores = {}, enviar, eliminar, textoElimi
     e.preventDefault();
     const datos = {};
     for (const c of campos) {
-      const el = f.elements[c.n];
-      if (c.t === 'check') datos[c.n] = el.checked;
-      else if (c.t === 'number') datos[c.n] = el.value === '' ? '' : Number(el.value);
-      else datos[c.n] = el.value;
-      if (c.req && (datos[c.n] === '' || datos[c.n] == null)) {
-        err.textContent = `Complete: ${c.l}`;
-        return;
+      if (c.t === 'checks') {
+        datos[c.n] = [...f.querySelectorAll(`[data-checks="${c.n}"] input:checked`)].map((cb) => cb.value);
+      } else {
+        const el = f.elements[c.n];
+        if (c.t === 'check') datos[c.n] = el.checked;
+        else if (c.t === 'number') datos[c.n] = el.value === '' ? '' : Number(el.value);
+        else datos[c.n] = el.value;
+        if (c.req && (datos[c.n] === '' || datos[c.n] == null)) {
+          err.textContent = `Complete: ${c.l}`;
+          return;
+        }
       }
     }
     const btn = $('button.primario', f);
@@ -380,7 +398,7 @@ function notificar(d) {
 }
 
 async function actualizarContadores() {
-  if (!S.me || !TABS[S.me.rol].includes('tickets')) return;
+  if (!S.me || !tabsDelUsuario().includes('tickets')) return;
   try {
     const lista = await api('GET', '/api/comandas?vista=cocina');
     const n = lista.filter((c) => !c.ticket_impreso).length;
@@ -490,7 +508,7 @@ async function renderLogin(mensaje = '') {
 function renderShell() {
   const rol = S.me.rol;
   const grupos = {};
-  for (const id of TABS[rol]) (grupos[TAB_INFO[id][1]] ||= []).push(id);
+  for (const id of tabsDelUsuario()) (grupos[TAB_INFO[id][1]] ||= []).push(id);
   let colapsado = false;
   try {
     colapsado = localStorage.getItem('lateral') === 'colapsado';
@@ -502,7 +520,7 @@ function renderShell() {
           <img class="logo" src="/icono.svg" alt="">
           <div class="txt"><b>${esc(S.config.nombreRestaurante)}</b><small>${esc(S.config.direccion || 'Sistema de comandas')}</small></div>
         </div>
-        <div class="rol-pill"><span class="txt">${ROL_TXT[rol]}</span><span class="punto" id="punto"></span></div>
+        <div class="rol-pill"><span class="txt">${(S.me.roles || [rol]).map((r) => ROL_TXT[r]).join(' + ')}</span><span class="punto" id="punto"></span></div>
         <nav class="nav">${Object.entries(grupos)
           .map(
             ([g, ids]) => `<div class="grupo">${esc(g)}</div>${ids
@@ -518,8 +536,8 @@ function renderShell() {
           <button class="btn-menu" data-accion="menu-movil" aria-label="Menú">${svg('<path d="M4 6h16M4 12h16M4 18h16"/>', 22)}</button>
           <h1 id="titulo-vista" class="crecer"></h1>
           <span class="reloj" id="reloj"></span>
-          ${TABS[rol].includes('tickets') ? `<a class="impresora-sup oculto" id="estado-impresora" href="#/tickets" aria-label="Estado de la ticketera">${svg('<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/>')}<span class="contador oculto"></span></a>` : ''}
-          ${TABS[rol].includes('tickets') ? `<a class="campana" href="#/tickets" aria-label="Tickets pendientes">${svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/>')}<span class="contador oculto"></span></a>` : ''}
+          ${tabsDelUsuario().includes('tickets') ? `<a class="impresora-sup oculto" id="estado-impresora" href="#/tickets" aria-label="Estado de la ticketera">${svg('<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/>')}<span class="contador oculto"></span></a>` : ''}
+          ${tabsDelUsuario().includes('tickets') ? `<a class="campana" href="#/tickets" aria-label="Tickets pendientes">${svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/>')}<span class="contador oculto"></span></a>` : ''}
           <button class="usuario-sup" data-accion="menu-usuario" aria-label="Menú de usuario">
             <span class="avatar" style="background:${COLORES_AVATAR[S.me.id % COLORES_AVATAR.length]}">${esc(iniciales(S.me.nombre))}</span>
             <span class="txt"><b>${esc(S.me.nombre)}</b><small>${ROL_TXT[rol]}</small></span>
@@ -541,7 +559,7 @@ function renderShell() {
 function iniciarApp() {
   renderShell();
   abrirSSE();
-  if (!location.hash || location.hash === '#/') location.hash = `#/${TABS[S.me.rol][0]}`;
+  if (!location.hash || location.hash === '#/') location.hash = `#/${tabsDelUsuario()[0]}`;
   else navegar();
   actualizarContadores();
   cargarTicketera();
@@ -574,8 +592,8 @@ async function navegar() {
   cerrarModal();
   const r = rutaActual();
   const def = VISTAS[r.nombre];
-  if (!def || !def.roles.includes(S.me.rol)) {
-    location.hash = `#/${TABS[S.me.rol][0]}`;
+  if (!def || !def.roles.some((r) => (S.me.roles || [S.me.rol]).includes(r))) {
+    location.hash = `#/${tabsDelUsuario()[0]}`;
     return;
   }
   const tabActivo = { comanda: 'comandas', nueva: 'comandas', editar: 'comandas' }[r.nombre] || r.nombre;
@@ -846,7 +864,7 @@ const ACCIONES = {
     const m = abrirModal(`
       <div class="pila">
         <div class="fila entre"><h3>${esc(S.me.nombre)}</h3><button class="btn chico" data-x>✕</button></div>
-        <div class="suave">${ROL_TXT[S.me.rol]} · usuario <b>${esc(S.me.usuario)}</b></div>
+        <div class="suave">${(S.me.roles || [S.me.rol]).map((r) => ROL_TXT[r]).join(' + ')} · usuario <b>${esc(S.me.usuario)}</b></div>
         <div class="tarjeta">${t ? `🟢 En turno desde las <b>${hora(t.inicio)}</b>` : '⚪ Sin turno abierto hoy'}</div>
         ${t ? '' : '<button class="btn ok bloque" data-a="iniciar">Iniciar turno</button>'}
         <button class="btn bloque" data-a="salir">Cerrar sesión (seguir en turno)</button>
@@ -2591,7 +2609,8 @@ async function adminUsuarios(cont) {
     { n: 'nombre', l: 'Nombre completo', req: true },
     { n: 'usuario', l: 'Usuario (identificador interno)', req: true },
     { n: 'pin', l: nuevo ? 'PIN (4 dígitos)' : 'Nuevo PIN (vacío = no cambiar)', t: 'password', attrs: 'inputmode="numeric" maxlength="4" pattern="\\d{4}"', req: nuevo },
-    { n: 'rol', l: 'Rol', t: 'select', op: Object.entries(ROL_TXT), def: 'mozo' },
+    { n: 'rol', l: 'Rol principal', t: 'select', op: Object.entries(ROL_TXT), def: 'mozo' },
+    { n: 'roles_extra', l: 'Roles adicionales', t: 'checks', op: Object.entries(ROL_TXT) },
     { n: 'activo', l: 'Activo (puede ingresar)', t: 'check', def: true },
   ];
   cont.innerHTML = `
@@ -2601,7 +2620,7 @@ async function adminUsuarios(cont) {
         .map(
           (u) => `<div class="item">
             <div class="crecer"><b>${esc(u.nombre)}</b> ${u.en_turno ? '<span class="etiqueta pagada">EN TURNO</span>' : ''} ${!u.activo ? '<span class="etiqueta agotado">INACTIVO</span>' : ''}
-              <div class="suave peq">${esc(u.usuario)} · ${ROL_TXT[u.rol]}</div></div>
+              <div class="suave peq">${esc(u.usuario)} · ${(u.roles || [u.rol]).map((r) => ROL_TXT[r]).join(' + ')}${(u.roles || [u.rol]).includes('mozo') ? ` · ${u.mesas_asignadas} mesa(s)` : ''}</div></div>
             <button class="btn chico" data-edit="${u.id}">Editar</button></div>`
         )
         .join('')}</div>
@@ -2614,7 +2633,7 @@ async function adminUsuarios(cont) {
         formulario({
           titulo: `Editar: ${u.nombre}`,
           campos: campos(false),
-          valores: { ...u, pin: '' },
+          valores: { ...u, pin: '', roles_extra: (u.roles || []).filter((r) => r !== u.rol) },
           enviar: (d) => api('PUT', `/api/usuarios/${u.id}`, d),
           eliminar:
             u.id !== S.me.id

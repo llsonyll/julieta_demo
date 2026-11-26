@@ -221,10 +221,13 @@ app.get(
     db
       .prepare(
         `SELECT ${COLS_USUARIO},
+          (SELECT GROUP_CONCAT(ur.rol) FROM usuario_roles ur WHERE ur.usuario_id = usuarios.id) AS roles_csv,
+          (SELECT COUNT(*) FROM mesas m WHERE m.mozo_id = usuarios.id) AS mesas_asignadas,
           EXISTS (SELECT 1 FROM turnos t WHERE t.usuario_id = usuarios.id AND t.fin IS NULL AND t.fecha = ?) AS en_turno
          FROM usuarios ORDER BY activo DESC, rol, nombre`
       )
       .all(hoy())
+      .map(({ roles_csv, ...u }) => ({ ...u, roles: roles_csv ? roles_csv.split(',') : [u.rol] }))
   )
 );
 
@@ -235,10 +238,18 @@ function validarUsuario(b, nuevo) {
   if (!/^[a-z0-9._-]{3,40}$/.test(usuario)) fail(400, 'Usuario: 3 a 40 caracteres (letras, números, . _ -)');
   if (!ROLES.includes(b.rol)) fail(400, 'Rol inválido');
   if ((nuevo || b.pin) && !esPin(b.pin)) fail(400, 'El PIN debe tener exactamente 4 dígitos');
-  return { nombre, usuario, rol: b.rol, activo: b.activo === undefined ? 1 : bool(b.activo) };
+  const rolesExtra = Array.isArray(b.roles_extra) ? b.roles_extra.filter((r) => ROLES.includes(r) && r !== b.rol) : [];
+  return { nombre, usuario, rol: b.rol, activo: b.activo === undefined ? 1 : bool(b.activo), rolesExtra };
 }
 const existeUsuario = (usuario, exceptoId = 0) =>
   db.prepare('SELECT 1 FROM usuarios WHERE usuario = ? AND id <> ?').get(usuario, exceptoId);
+
+function sincRoles(usuarioId, rolPrincipal, rolesExtra) {
+  const insRol = db.prepare('INSERT OR IGNORE INTO usuario_roles (usuario_id, rol) VALUES (?,?)');
+  db.prepare('DELETE FROM usuario_roles WHERE usuario_id = ?').run(usuarioId);
+  insRol.run(usuarioId, rolPrincipal);
+  for (const r of rolesExtra) insRol.run(usuarioId, r);
+}
 
 app.post(
   '/api/usuarios',
@@ -249,6 +260,7 @@ app.post(
     const id = db
       .prepare("INSERT INTO usuarios (nombre, usuario, pin_hash, rol, activo, creado_en, password_hash) VALUES (?,?,?,?,?,?,'')")
       .run(u.nombre, u.usuario, hashPassword(req.body.pin), u.rol, u.activo, ahora()).lastInsertRowid;
+    sincRoles(id, u.rol, u.rolesExtra);
     return db.prepare(`SELECT ${COLS_USUARIO} FROM usuarios WHERE id = ?`).get(id);
   })
 );
@@ -263,11 +275,14 @@ app.put(
     if (existeUsuario(u.usuario, id)) fail(409, 'Ese nombre de usuario ya existe');
     if (id === req.user.id && (u.rol !== 'admin' || !u.activo)) fail(400, 'No puede quitarse el rol de admin ni desactivarse a sí mismo');
     db.prepare('UPDATE usuarios SET nombre=?, usuario=?, rol=?, activo=? WHERE id=?').run(u.nombre, u.usuario, u.rol, u.activo, id);
+    sincRoles(id, u.rol, u.rolesExtra);
     if (req.body.pin) {
       db.prepare('UPDATE usuarios SET pin_hash=? WHERE id=?').run(hashPassword(req.body.pin), id);
       fallos.delete(id); // el admin cambia el PIN: se desbloquea
     }
     if (!u.activo) db.prepare('DELETE FROM sesiones WHERE usuario_id = ?').run(id);
+    if (![u.rol, ...u.rolesExtra].includes('mozo')) db.prepare('UPDATE mesas SET mozo_id = NULL WHERE mozo_id = ?').run(id);
+    emitir('mesas');
     return db.prepare(`SELECT ${COLS_USUARIO} FROM usuarios WHERE id = ?`).get(id);
   })
 );
@@ -940,7 +955,7 @@ app.post(
     if (!ESTADOS.includes(nuevo)) fail(400, 'Estado inválido');
     if (nuevo === c.estado) return c;
     const permitidos = TRANSICIONES[c.estado]?.[nuevo];
-    if (req.user.rol !== 'admin' && !(permitidos && permitidos.includes(req.user.rol))) fail(403, 'No puede hacer ese cambio de estado');
+    if (!req.user.roles.includes('admin') && !(permitidos && permitidos.some((r) => req.user.roles.includes(r)))) fail(403, 'No puede hacer ese cambio de estado');
     if (nuevo === 'cancelado' && c.pagada) fail(400, 'Anule primero el cobro');
     tx(() => registrarEstado(c.id, nuevo, req.user.id));
     notificarComanda(c.id, 'estado');
