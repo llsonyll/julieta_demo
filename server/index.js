@@ -703,6 +703,12 @@ app.post(
   })
 );
 
+app.get(
+  '/api/ajustes',
+  rol('admin'),
+  ruta(() => ({ precio_menu: precioMenu() }))
+);
+
 app.put(
   '/api/carta/precio-menu',
   rol('admin'),
