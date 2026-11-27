@@ -130,6 +130,8 @@ Crea un servicio `systemd` llamado `comandas` (`systemctl status comandas`, `jou
 2. Conecte la PC al router **por cable** si se puede (es más estable que el WiFi).
 3. En cada celular: conéctese al WiFi del restaurante, abra el navegador en
    `http://IP-DE-LA-PC:3000` y use **"Agregar a pantalla de inicio"** para tenerlo como una app.
+   La dirección exacta aparece en la **pantalla de ingreso** del sistema (y en el menú de usuario),
+   con un botón **Ver QR**: basta con escanearlo con la cámara del celular.
 4. Si el router tiene una **red de invitados** para clientes, no la use para los empleados:
    esas redes suelen aislar los dispositivos y no dejan llegar a la PC.
 

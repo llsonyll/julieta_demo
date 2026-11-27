@@ -417,6 +417,40 @@ document.addEventListener('visibilitychange', () => {
   actualizarContadores();
 });
 
+// ---------------- dirección para los celulares ----------------
+/** Direcciones de la PC servidor; primero la que se está usando, si se entró desde la red */
+function direccionesCelular() {
+  const d = S.config.direcciones || [];
+  const actual = d.find((x) => x.ip === location.hostname);
+  return actual ? [actual, ...d.filter((x) => x !== actual)] : d;
+}
+const direccionCelular = () => direccionesCelular()[0]?.url || '';
+
+/** Ventana con la dirección y su QR para abrir el sistema desde un celular */
+async function mostrarDireccion() {
+  try {
+    S.config.direcciones = (await api('GET', '/api/config')).direcciones; // por si cambió la IP
+  } catch {}
+  const d = direccionesCelular();
+  if (!d.length) return toast('Esta PC no está conectada a ninguna red: revise el WiFi o el cable de red.', 'error', 6000);
+  const p = d[0];
+  const m = abrirModal(`
+    <div class="pila direccion-red">
+      <div class="fila entre"><h3>📱 Entrar desde el celular</h3><button class="btn chico" data-x>✕</button></div>
+      <img class="qr-red" src="/api/red/qr.svg?u=${encodeURIComponent(p.url)}" alt="Código QR con la dirección ${esc(p.url)}" width="240" height="240">
+      <div class="url-red">${esc(p.url)}</div>
+      <ol class="pasos-red suave">
+        <li>Conecte el celular al <b>WiFi del local</b>.</li>
+        <li>Escanee el código con la cámara o escriba la dirección en el navegador.</li>
+        <li>Use "Agregar a pantalla de inicio" para tenerlo como una app.</li>
+      </ol>
+      ${d.length > 1 ? `<div class="suave peq">Otras direcciones de esta PC: ${d.slice(1).map((x) => `${esc(x.url)} (${esc(x.interfaz)})`).join(' · ')}</div>` : ''}
+      <button class="btn bloque" data-copiar="${esc(p.url)}">Copiar dirección</button>
+    </div>`);
+  $('[data-x]', m).onclick = cerrarModal;
+  $('[data-copiar]', m).onclick = () => copiar(p.url);
+}
+
 // ---------------- login y estructura ----------------
 const iniciales = (n) => String(n).trim().split(/\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
 const COLORES_AVATAR = ['#7c3aed', '#0d9488', '#db2777', '#d97706', '#2563eb', '#ea580c', '#16a34a', '#9333ea'];
@@ -458,7 +492,15 @@ async function renderLogin(mensaje = '') {
             .join('')}</div>
         </div>
       </div>
+      ${
+        direccionCelular()
+          ? `<div class="login-red">📱 Para entrar desde los celulares: <b>${esc(direccionCelular())}</b>
+              <button type="button" class="btn chico" id="ver-direccion">Ver QR</button></div>`
+          : ''
+      }
     </div>`;
+  const vd = $('#ver-direccion');
+  if (vd) vd.onclick = mostrarDireccion;
 
   const pintar = () => $$('.pin-puntos i').forEach((el, i) => el.classList.toggle('lleno', i < pin.length));
   const tecla = async (k) => {
@@ -870,9 +912,13 @@ const ACCIONES = {
         ${t ? '' : '<button class="btn ok bloque" data-a="iniciar">Iniciar turno</button>'}
         <button class="btn bloque" data-a="salir">Cerrar sesión (seguir en turno)</button>
         <button class="btn peligro bloque" data-a="fin">Finalizar turno y salir</button>
-        <div class="suave peq">Dirección del sistema: <b>${esc(location.origin)}</b></div>
+        <div class="fila entre envolver suave peq">
+          <span>📱 Desde los celulares: <b>${esc(direccionCelular() || location.origin)}</b></span>
+          <button class="btn chico" id="ver-direccion">Ver QR</button>
+        </div>
       </div>`);
     $('[data-x]', m).onclick = cerrarModal;
+    $('#ver-direccion', m).onclick = mostrarDireccion;
     $$('[data-a]', m).forEach(
       (b) =>
         (b.onclick = async () => {
