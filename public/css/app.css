@@ -388,8 +388,6 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
   background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; font-size: .9rem;
 }
 
-.salon-cuerpo { display: grid; grid-template-columns: 1fr 230px; gap: 14px; align-items: start; }
-@media (max-width: 899px) { .salon-cuerpo { grid-template-columns: 1fr; } }
 
 /* plano a escala: todo se ubica en % del nivel */
 .plano-nivel { position: relative; width: 100%; max-width: 760px; background: #fff; border: 2px solid #334155; border-radius: 14px; }
@@ -413,8 +411,6 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .mesa-p.libre { background: #16a34a; border-color: #15803d; }
 .mesa-p.ocupada { background: #ef4444; border-color: #dc2626; }
 .mesa-p.cobrar { background: #f59e0b; border-color: #d97706; }
-.mesa-p.excedida { outline: 3px solid #f59e0b; outline-offset: 2px; }
-.mesa-p.cobrar.excedida { outline-color: #b45309; }
 .uniendo .mesa-p { opacity: .55; }
 .uniendo .mesa-p.sel { opacity: 1; outline: 3px solid #0f766e; outline-offset: 3px; }
 .union { border: 2px dashed #0f766e; border-radius: 12px; background: #0f766e14; z-index: 1; pointer-events: none; }
@@ -426,11 +422,6 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .editando .mesa-p, .editando .elem { cursor: grab; touch-action: none; user-select: none; }
 .editando .elegido { outline: 3px solid #2563eb; outline-offset: 2px; z-index: 3; }
 
-.excedidas { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-.excedidas h4 { margin: 0; font-size: .85rem; color: #b45309; }
-.excedidas .tarjeta { text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 2px; border-color: #fde68a; }
-.excedidas small { color: var(--suave); }
-.excedidas .t { color: #b45309; font-weight: 700; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .85rem; }
 
 .leyenda-salon { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--borde); font-size: .82rem; color: var(--suave); }
 .leyenda-salon span { display: inline-flex; align-items: center; gap: 6px; }
@@ -438,7 +429,6 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .leyenda-salon i.libre { background: #16a34a; }
 .leyenda-salon i.ocupada { background: #ef4444; }
 .leyenda-salon i.cobrar { background: #f59e0b; }
-.leyenda-salon i.excedida { border: 2px solid #f59e0b; }
 .leyenda-salon i.unidas { border: 2px dashed #0f766e; }
 
 /* ---------- cartas ---------- */
