@@ -1240,9 +1240,12 @@ function detalleGuarnicion(it) {
   if (it.guarnicion_eleccion) partes.push(esc(it.guarnicion_eleccion));
   return partes.join(' + ');
 }
-const lineaItem = (i) => {
+// el envase se cobra pero no se cocina: no va en tarjetas ni tickets
+const esPlato = (i) => i.tipo !== 'envase';
+/** enMesa: marca 🥡 los platos para llevar de una comanda de mesa */
+const lineaItem = (i, enMesa) => {
   const g = detalleGuarnicion(i);
-  return `<li>${i.cantidad}× ${esc(i.nombre)}${g ? `<div class="guar">${g}</div>` : ''}${i.nota ? `<div class="guar nota-item">📝 ${esc(i.nota)}</div>` : ''}</li>`;
+  return `<li>${enMesa && i.para_llevar ? '🥡 ' : ''}${i.cantidad}× ${esc(i.nombre)}${g ? `<div class="guar">${g}</div>` : ''}${i.nota ? `<div class="guar nota-item">📝 ${esc(i.nota)}</div>` : ''}</li>`;
 };
 
 function botonesComanda(c) {
@@ -1275,7 +1278,7 @@ function tarjetaComanda(c) {
         <span class="suave peq">· ${esc(c.mozo_nombre || '')} · ${hora(c.creado_en)}</span>
         ${etiquetaPago(c)}
         ${pendienteTicket ? '<span class="etiqueta llevar">🖨️ TICKET PENDIENTE</span>' : ''}</div>
-      <ul class="items">${c.items.map(lineaItem).join('')}</ul>
+      <ul class="items">${c.items.filter(esPlato).map((i) => lineaItem(i, c.tipo === 'local')).join('')}</ul>
       ${c.nota ? `<div class="nota">📝 ${esc(c.nota)}</div>` : ''}
       <div class="fila entre" style="margin-top:6px"><b>${dinero(c.total)}</b></div>
       <div class="acciones">${botonesComanda(c)}</div>
@@ -1467,6 +1470,8 @@ async function vEditorComanda(main, r, esRecarga) {
           nota: i.nota,
           base: i.guarnicion_base_id || null,
           eleccion: i.guarnicion_eleccion_id || null,
+          llevar: !!i.para_llevar,
+          envase: !!i.con_envase,
         });
   const lineasGuardadas = JSON.stringify(b.lineas);
   if (r.query.get('mesa')) b.tipo = 'local';
@@ -1475,11 +1480,14 @@ async function vEditorComanda(main, r, esRecarga) {
   if (existente?.mesa_id && !mesas.find((m) => m.id === existente.mesa_id))
     mesas.push({ id: existente.mesa_id, numero: existente.mesa_numero, ocupada: true });
 
-  const total = () => b.lineas.reduce((s, l) => s + (porId.get(l.producto_id)?.precio || 0) * l.cantidad, 0);
+  const precioEnvase = carta.precio_envase ?? 1;
+  const envaseDe = (l) => (l.llevar && l.envase ? precioEnvase : 0);
+  const total = () => b.lineas.reduce((s, l) => s + ((porId.get(l.producto_id)?.precio || 0) + envaseDe(l)) * l.cantidad, 0);
   const cantidadTotal = () => b.lineas.reduce((s, l) => s + l.cantidad, 0);
   const cantidadDe = (pid) => b.lineas.filter((l) => l.producto_id === pid).reduce((s, l) => s + l.cantidad, 0);
   const nombreG = (id) => guarPorId.get(id)?.nombre || '';
-  const mismaConfig = (a, c) => a.producto_id === c.producto_id && a.base === c.base && a.eleccion === c.eleccion && (a.nota || '') === (c.nota || '');
+  const mismaConfig = (a, c) =>
+    a.producto_id === c.producto_id && a.base === c.base && a.eleccion === c.eleccion && (a.nota || '') === (c.nota || '') && !!a.llevar === !!c.llevar && !!a.envase === !!c.envase;
 
   function textoLinea(l) {
     const p = porId.get(l.producto_id);
@@ -1502,7 +1510,9 @@ async function vEditorComanda(main, r, esRecarga) {
 
   // Modal para elegir guarniciones, cantidad y nota de un plato
   function configurarPlato(p, idx) {
-    const l = idx != null ? b.lineas[idx] : { producto_id: p.id, cantidad: 1, nota: '', base: p.guarnicion_base_id || null, eleccion: null };
+    const l = idx != null ? b.lineas[idx] : { producto_id: p.id, cantidad: 1, nota: '', base: p.guarnicion_base_id || null, eleccion: null, llevar: b.tipo === 'llevar', envase: true };
+    let llevar = b.tipo === 'llevar' || !!l.llevar;
+    let envase = l.envase ?? true;
     let base = l.base;
     let eleccion = l.eleccion;
     let cantidad = l.cantidad;
@@ -1527,6 +1537,12 @@ async function vEditorComanda(main, r, esRecarga) {
         <div class="fila entre"><h3>${esc(p.nombre)}</h3><button class="btn chico" data-x>✕</button></div>
         <div class="suave">${p.tipo === 'menu' ? `Menú ${dinero(p.precio)} · incluye ${incluidoMenu.join(' + ').toLowerCase()}` : dinero(p.precio)}</div>
         ${htmlGuarnicion}
+        <div class="fila entre envolver">
+          ${b.tipo === 'local'
+            ? `<div class="segmento compacto"><button type="button" data-llevar="0" class="${llevar ? '' : 'activo'}">🍽️ En mesa</button><button type="button" data-llevar="1" class="${llevar ? 'activo' : ''}">🥡 Para llevar</button></div>`
+            : '<b>🥡 Para llevar</b>'}
+          <label class="fila ${llevar ? '' : 'oculto'}" id="campo-envase"><input type="checkbox" id="envase" ${envase ? 'checked' : ''}> Envase +${dinero(precioEnvase)} c/u</label>
+        </div>
         <label class="campo"><span>Nota para cocina (opcional)</span>
           <input id="nota-plato" value="${esc(l.nota)}" placeholder="Ej: bien cocido, sin cebolla" maxlength="150" autocomplete="off"></label>
         <div class="fila entre">
@@ -1558,6 +1574,15 @@ async function vEditorComanda(main, r, esRecarga) {
     );
     $('#menos', m).onclick = () => ($('#cant', m).textContent = cantidad = Math.max(1, cantidad - 1));
     $('#mas', m).onclick = () => ($('#cant', m).textContent = cantidad = Math.min(99, cantidad + 1));
+    $$('[data-llevar]', m).forEach(
+      (x) =>
+        (x.onclick = () => {
+          llevar = x.dataset.llevar === '1';
+          $$('[data-llevar]', m).forEach((y) => y.classList.toggle('activo', y === x));
+          $('#campo-envase', m).classList.toggle('oculto', !llevar);
+        })
+    );
+    $('#envase', m).onchange = (e) => (envase = e.target.checked);
     if (idx != null)
       $('#quitar', m).onclick = () => {
         b.lineas.splice(idx, 1);
@@ -1569,7 +1594,7 @@ async function vEditorComanda(main, r, esRecarga) {
         $('[data-err]', m).textContent = 'Elija la guarnición a elección (o "Ninguna")';
         return;
       }
-      const nueva = { producto_id: p.id, cantidad, nota: $('#nota-plato', m).value.trim(), base, eleccion };
+      const nueva = { producto_id: p.id, cantidad, nota: $('#nota-plato', m).value.trim(), base, eleccion, llevar, envase };
       if (idx != null) b.lineas.splice(idx, 1);
       agregarLinea(nueva);
       cerrarModal();
@@ -1631,7 +1656,8 @@ async function vEditorComanda(main, r, esRecarga) {
             <div class="nombre">${esc(p.nombre)}</div>
             ${det ? `<div class="guar">${det}</div>` : ''}
             ${l.nota ? `<div class="guar nota-item">📝 ${esc(l.nota)}</div>` : ''}
-            <div class="suave peq">${dinero(p.precio * l.cantidad)} · tocar para cambiar</div>
+            ${l.llevar && b.tipo === 'local' ? '<span class="etiqueta llevar">🥡 PARA LLEVAR</span>' : ''}
+            <div class="suave peq">${dinero(p.precio * l.cantidad)}${envaseDe(l) ? ` + envase ${dinero(envaseDe(l) * l.cantidad)}` : ''} · tocar para cambiar</div>
           </div>
           <div class="contador-cant"><button type="button" data-l-menos="${i}">−</button><span class="v">${l.cantidad}</span><button type="button" class="mas" data-l-mas="${i}">＋</button></div>
         </div>`;
@@ -1762,6 +1788,8 @@ async function vEditorComanda(main, r, esRecarga) {
       (el) =>
         (el.onclick = () => {
           b.tipo = el.dataset.tipo;
+          // para llevar: todos sus platos van para llevar; en mesa: vuelven a mesa
+          b.lineas.forEach((l) => (l.llevar = b.tipo === 'llevar'));
           render();
         })
     );
@@ -1827,6 +1855,8 @@ async function vEditorComanda(main, r, esRecarga) {
         nota: l.nota,
         guarnicion_base_id: l.base,
         guarnicion_eleccion_id: l.eleccion,
+        para_llevar: !!l.llevar,
+        con_envase: !!(l.llevar && l.envase),
       })),
     };
     $$('.acciones-pedido button', main).forEach((x) => (x.disabled = true));
@@ -1872,7 +1902,7 @@ async function vTickets(main) {
       <div class="fila entre"><span class="num">#${c.numero_dia} · ${lugar(c)}</span>
         <span class="tiempo" data-desde="${esc(c.enviado_en || c.creado_en)}"></span></div>
       <div class="suave peq">${esc(c.mozo_nombre || '')} · enviado ${hora(c.enviado_en)} ${c.ticket_modificado ? '· <b>MODIFICADA</b>' : ''}</div>
-      <ul class="items">${c.items.map(lineaItem).join('')}</ul>
+      <ul class="items">${c.items.filter(esPlato).map((i) => lineaItem(i, c.tipo === 'local')).join('')}</ul>
       ${c.nota ? `<div class="nota">📝 ${esc(c.nota)}</div>` : ''}
       <div class="acciones">
         <button class="btn chico ${c.ticket_impreso ? '' : 'primario'}" data-accion="imprimir-ticket" data-ids="${c.id}">🖨️ ${c.ticket_impreso ? 'Reimprimir' : 'Imprimir'}</button>
@@ -2984,6 +3014,12 @@ async function adminConfiguracion(cont) {
             <input class="entrada" name="precio_menu" type="number" step="0.10" min="0" inputmode="decimal"
               value="${ajustes.precio_menu || ''}" placeholder="0.00" required>
           </label>
+          <label class="campo">
+            <span>Envase por plato para llevar</span>
+            <input class="entrada" name="precio_envase" type="number" step="0.10" min="0" inputmode="decimal"
+              value="${ajustes.precio_envase}" placeholder="0.00" required>
+            <small class="suave">Se suma por cada plato para llevar; el mozo puede quitarlo en cada plato. 0 = no se cobra.</small>
+          </label>
           <button class="btn primario" type="submit">Guardar</button>
         </form>
       </div>
@@ -2991,7 +3027,7 @@ async function adminConfiguracion(cont) {
   $('#form-config', cont).onsubmit = async (e) => {
     e.preventDefault();
     try {
-      await api('PUT', '/api/carta/precio-menu', { precio: Number(e.target.precio_menu.value) });
+      await api('PUT', '/api/ajustes', { precio_menu: e.target.precio_menu.value, precio_envase: e.target.precio_envase.value });
       toast('Configuración guardada', 'ok');
     } catch (err) {
       toast(err.message, 'error');
