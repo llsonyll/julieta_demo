@@ -658,12 +658,20 @@ async function navegar() {
 }
 window.addEventListener('hashchange', navegar);
 
+// Recarga en vivo: la vista se vuelve a dibujar sin mover al usuario. Mientras llegan los datos,
+// la página conserva su alto (si se encoge, el navegador sube al inicio) y luego vuelve al mismo scroll.
 async function recargarVista() {
   if (!S.vista) return;
+  const main = $('#vista');
+  const y = window.scrollY;
+  main.style.minHeight = `${main.offsetHeight}px`;
   try {
     await S.vista.recargar();
   } catch (e) {
     console.warn(e);
+  } finally {
+    main.style.minHeight = '';
+    window.scrollTo(0, y);
   }
 }
 const ir = (hash) => (location.hash = hash);
