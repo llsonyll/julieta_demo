@@ -1565,7 +1565,7 @@ async function vEditorComanda(main, r, esRecarga) {
         refrescar();
       };
     $('#ok', m).onclick = () => {
-      if (p.con_eleccion && !eleccionTocada) {
+      if (p.con_eleccion && opcionesEleccion.length && !eleccionTocada) {
         $('[data-err]', m).textContent = 'Elija la guarnición a elección (o "Ninguna")';
         return;
       }
