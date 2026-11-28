@@ -390,7 +390,7 @@ app.get(
   '/api/mesas',
   ruta((req) => {
     const todas = listarMesas();
-    return req.user.rol === 'admin' ? todas : todas.filter((m) => m.activa);
+    return req.user.roles.includes('admin') ? todas : todas.filter((m) => m.activa);
   })
 );
 
@@ -453,9 +453,10 @@ app.post(
     tx(() => {
       for (const m of miembros) db.prepare('UPDATE mesas SET unida_a = ? WHERE id = ?').run(m.id === principal.id ? null : principal.id, m.id);
       // las comandas abiertas de las otras mesas pasan a la principal
-      db.prepare(
-        `UPDATE comandas SET mesa_id = ? WHERE pagada = 0 AND estado <> 'cancelado' AND mesa_id IN (${otras.map(() => '?').join(',')})`
-      ).run(principal.id, ...otras);
+      const enOtras = `IN (${otras.map(() => '?').join(',')})`;
+      db.prepare(`UPDATE comandas SET mesa_id = ? WHERE pagada = 0 AND estado <> 'cancelado' AND mesa_id ${enOtras}`).run(principal.id, ...otras);
+      // sus atenciones abiertas también pasan a la principal (siguen separadas: cada cliente con su cuenta)
+      db.prepare(`UPDATE atenciones SET mesa_id = ? WHERE estado = 'abierta' AND mesa_id ${enOtras}`).run(principal.id, ...otras);
       refrescarEtiquetas(principal.id);
     });
     emitir('mesas');
@@ -573,16 +574,19 @@ app.delete(
 );
 
 // ---------------- platos (catálogo) ----------------
-const ROLES_MENU = ['sopa', 'fijo', 'variable'];
+const ROLES_MENU = ['sopa', 'refresco', 'fijo', 'variable'];
+// sopa y refresco: uno por día, van incluidos en el menú (no se piden solos ni llevan guarnición)
+const UNICOS_DIA = ['sopa', 'refresco'];
 const precioMenu = () => Number(db.prepare("SELECT valor FROM ajustes WHERE clave = 'precio_menu'").get()?.valor) || 0;
-// Sin sopa elegida no hay menú ese día
-const sopaDelDia = (fecha) =>
+// Sopa / refresco del día. Sin sopa elegida no hay menú ese día; el refresco es opcional
+const unicoDelDia = (fecha, rol) =>
   db.prepare(`SELECT p.* FROM menu_dia m JOIN productos p ON p.id = m.producto_id
-    WHERE m.fecha = ? AND p.tipo = 'menu' AND p.menu_rol = 'sopa' AND p.activo = 1`).get(fecha) || null;
-// El menú lleva una sola sopa: elegir otra reemplaza la anterior
+    WHERE m.fecha = ? AND p.tipo = 'menu' AND p.menu_rol = ? AND p.activo = 1`).get(fecha, rol) || null;
+// El menú lleva una sola sopa y un solo refresco: elegir otro reemplaza al anterior
 function incluirEnMenu(fecha, id) {
-  if (db.prepare("SELECT 1 FROM productos WHERE id = ? AND menu_rol = 'sopa'").get(id))
-    db.prepare("DELETE FROM menu_dia WHERE fecha = ? AND producto_id IN (SELECT id FROM productos WHERE menu_rol = 'sopa')").run(fecha);
+  const rol = db.prepare("SELECT menu_rol FROM productos WHERE id = ? AND tipo = 'menu'").get(id)?.menu_rol;
+  if (UNICOS_DIA.includes(rol))
+    db.prepare("DELETE FROM menu_dia WHERE fecha = ? AND producto_id IN (SELECT id FROM productos WHERE tipo = 'menu' AND menu_rol = ?)").run(fecha, rol);
   db.prepare('INSERT OR IGNORE INTO menu_dia (fecha, producto_id) VALUES (?,?)').run(fecha, id);
 }
 const SQL_PRODUCTO = `SELECT p.*, g.nombre AS guarnicion_base FROM productos p
@@ -591,7 +595,7 @@ const SQL_PRODUCTO = `SELECT p.*, g.nombre AS guarnicion_base FROM productos p
 app.get(
   '/api/productos',
   ruta((req) => {
-    const where = req.user.rol === 'admin' ? '1=1' : 'p.activo = 1';
+    const where = req.user.roles.includes('admin') ? '1=1' : 'p.activo = 1';
     return db.prepare(`${SQL_PRODUCTO} WHERE ${where} ORDER BY p.tipo DESC, p.categoria, p.nombre`).all();
   })
 );
@@ -600,14 +604,15 @@ function validarProducto(b) {
   const nombre = texto(b.nombre, 120);
   if (!nombre) fail(400, 'El nombre es obligatorio');
   const tipo = ['menu', 'extra', 'bebidas'].includes(b.tipo) ? b.tipo : fail(400, 'Indique si es menú, extra o bebida');
-  const menu_rol = tipo === 'extra' || tipo === 'bebidas' ? 'variable' : ROLES_MENU.includes(b.menu_rol) ? b.menu_rol : fail(400, 'Indique si es sopa, segundo fijo o variable');
+  const menu_rol = tipo === 'extra' || tipo === 'bebidas' ? 'variable' : ROLES_MENU.includes(b.menu_rol) ? b.menu_rol : fail(400, 'Indique si es sopa, refresco, segundo fijo o variable');
   // los platos del menú no tienen precio propio: se cobra el precio fijo del menú
   const precio = tipo === 'menu' ? 0 : Number(b.precio);
   if (((tipo === 'extra' || tipo === 'bebidas') && b.precio === '') || !Number.isFinite(precio) || precio < 0) fail(400, 'Precio inválido');
   let guarnicion_base_id = b.guarnicion_base_id ? Number(b.guarnicion_base_id) : null;
   if (guarnicion_base_id && !db.prepare('SELECT 1 FROM guarniciones WHERE id = ?').get(guarnicion_base_id))
     fail(400, 'La guarnición elegida no existe');
-  if (menu_rol === 'sopa' && tipo === 'menu') guarnicion_base_id = null; // la sopa no lleva guarnición
+  const sinGuarnicion = tipo === 'menu' && UNICOS_DIA.includes(menu_rol);
+  if (sinGuarnicion) guarnicion_base_id = null; // sopa y refresco no llevan guarnición
   const p = {
     nombre,
     descripcion: texto(b.descripcion, 300),
@@ -616,7 +621,7 @@ function validarProducto(b) {
     tipo,
     menu_rol,
     guarnicion_base_id,
-    con_eleccion: menu_rol === 'sopa' && tipo === 'menu' ? 0 : bool(b.con_eleccion),
+    con_eleccion: sinGuarnicion ? 0 : bool(b.con_eleccion),
     para_local: b.para_local === undefined ? 1 : bool(b.para_local),
     para_llevar: b.para_llevar === undefined ? 1 : bool(b.para_llevar),
     disponible: b.disponible === undefined ? 1 : bool(b.disponible),
@@ -635,7 +640,7 @@ app.post(
     const p = validarProducto(req.body);
     const id = tx(() => {
       const nuevo = db.prepare(`INSERT INTO productos (${COLS_P}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(...valoresP(p)).lastInsertRowid;
-      // una sopa o segundo variable creado se agrega al menú de la fecha indicada (por defecto, hoy)
+      // una sopa, refresco o segundo variable creado se agrega al menú de la fecha indicada (por defecto, hoy)
       if (p.tipo === 'menu' && p.menu_rol !== 'fijo' && req.body.agregar_a_fecha !== false)
         incluirEnMenu(esFecha(req.body.agregar_a_fecha) ? req.body.agregar_a_fecha : hoy(), nuevo);
       return nuevo;
@@ -690,7 +695,8 @@ app.delete(
 // ---------------- carta del día ----------------
 function cartaDelDia(fecha, completo) {
   const enMenu = new Set(db.prepare('SELECT producto_id FROM menu_dia WHERE fecha = ?').all(fecha).map((r) => r.producto_id));
-  const sopa = sopaDelDia(fecha);
+  const sopa = unicoDelDia(fecha, 'sopa');
+  const refresco = unicoDelDia(fecha, 'refresco');
   const delDia = new Set(db.prepare('SELECT guarnicion_id FROM guarniciones_dia WHERE fecha = ?').all(fecha).map((r) => r.guarnicion_id));
   const productos = db
     .prepare(`${SQL_PRODUCTO} WHERE ${completo ? '1=1' : 'p.activo = 1'} ORDER BY p.categoria, p.nombre`)
@@ -704,9 +710,11 @@ function cartaDelDia(fecha, completo) {
     fecha,
     precio_menu: precioMenu(),
     sopa,
+    refresco,
     sopas: productos.filter((p) => p.tipo === 'menu' && p.menu_rol === 'sopa' && (completo || p.en_carta)),
+    refrescos: productos.filter((p) => p.tipo === 'menu' && p.menu_rol === 'refresco' && (completo || p.en_carta)),
     // segundos del menú: fijos (todos los días con menú) + variables del día
-    menu: productos.filter((p) => p.tipo === 'menu' && p.menu_rol !== 'sopa' && (completo || (p.en_carta && sopa))),
+    menu: productos.filter((p) => p.tipo === 'menu' && !UNICOS_DIA.includes(p.menu_rol) && (completo || (p.en_carta && sopa))),
     extras: productos.filter((p) => p.tipo === 'extra'),
     bebidas: productos.filter((p) => p.tipo === 'bebidas'),
     guarniciones,
@@ -717,7 +725,7 @@ app.get(
   '/api/carta',
   ruta((req) => {
     const fecha = esFecha(req.query.fecha) ? req.query.fecha : hoy();
-    return cartaDelDia(fecha, req.user.rol === 'admin' && req.query.completo === '1');
+    return cartaDelDia(fecha, req.user.roles.includes('admin') && req.query.completo === '1');
   })
 );
 
@@ -793,6 +801,9 @@ app.post(
 // ---------------- comandas ----------------
 const SQL_COMANDA = `
   SELECT c.*, COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero) AS mesa_numero, m.piso AS mesa_piso, u.nombre AS mozo_nombre,
+    a.numero_dia AS atencion_numero,
+    (SELECT COUNT(*) FROM comandas x WHERE x.atencion_id = c.atencion_id) AS atencion_comandas,
+    (SELECT COALESCE(SUM(x.total), 0) FROM comandas x WHERE x.atencion_id = c.atencion_id AND x.pagada = 0 AND x.estado <> 'cancelado') AS atencion_por_cobrar,
     co.metodo AS metodo_pago, co.comprobante AS cobro_comprobante,
     (SELECT s.id FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_id,
     (SELECT s.serie || '-' || s.numero FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_numero,
@@ -801,6 +812,7 @@ const SQL_COMANDA = `
   FROM comandas c
   LEFT JOIN mesas m ON m.id = c.mesa_id
   LEFT JOIN usuarios u ON u.id = c.mozo_id
+  LEFT JOIN atenciones a ON a.id = c.atencion_id
   LEFT JOIN cobros co ON co.id = c.cobro_id`;
 
 function adjuntarItems(comandas) {
@@ -877,16 +889,17 @@ function prepararItems(itemsBody, tipo) {
   if (!Array.isArray(itemsBody) || !itemsBody.length) fail(400, 'Agregue al menos un plato');
   const getP = db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`);
   const getG = db.prepare('SELECT * FROM guarniciones WHERE id = ?');
-  const sopa = sopaDelDia(hoy());
+  const sopa = unicoDelDia(hoy(), 'sopa');
+  const refresco = unicoDelDia(hoy(), 'refresco');
   return itemsBody.map((it) => {
     const p = getP.get(Number(it.producto_id));
     if (!p || !p.activo) fail(400, 'Uno de los platos ya no existe');
     if (tipo === 'local' && !p.para_local) fail(400, `"${p.nombre}" no está disponible para mesa`);
     if (tipo === 'llevar' && !p.para_llevar) fail(400, `"${p.nombre}" no está disponible para llevar`);
     const cantidad = Math.max(1, Math.min(99, parseInt(it.cantidad, 10) || 1));
-    // Menú: se elige el segundo, la sopa del día va incluida y se cobra el precio fijo
+    // Menú: se elige el segundo, la sopa y el refresco del día van incluidos y se cobra el precio fijo
     const esMenu = p.tipo === 'menu';
-    if (esMenu && p.menu_rol === 'sopa') fail(400, `"${p.nombre}" es la sopa: elija un segundo del menú`);
+    if (esMenu && UNICOS_DIA.includes(p.menu_rol)) fail(400, `"${p.nombre}" va incluido en el menú: elija un segundo`);
     if (esMenu && !sopa) fail(400, 'Hoy no hay menú (falta elegir la sopa del día)');
     if (esMenu && !precioMenu()) fail(400, 'Falta poner el precio del menú (Gestión → Carta del día)');
 
@@ -914,6 +927,7 @@ function prepararItems(itemsBody, tipo) {
       tipo: p.tipo,
       precio: esMenu ? precioMenu() : p.precio,
       sopa: esMenu ? sopa.nombre : '',
+      refresco: esMenu && refresco ? refresco.nombre : '',
       cantidad,
       nota: texto(it.nota, 150),
       disponible: p.disponible,
@@ -941,13 +955,13 @@ function guardarItems(comandaId, items) {
   db.prepare('DELETE FROM comanda_items WHERE comanda_id = ?').run(comandaId);
   const ins = db.prepare(
     `INSERT INTO comanda_items (comanda_id, producto_id, nombre, tipo, precio, cantidad, nota,
-       guarnicion_base_id, guarnicion_base, guarnicion_defecto, guarnicion_eleccion_id, guarnicion_eleccion, sopa)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       guarnicion_base_id, guarnicion_base, guarnicion_defecto, guarnicion_eleccion_id, guarnicion_eleccion, sopa, refresco)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   let total = 0;
   for (const it of items) {
     ins.run(comandaId, it.producto_id, it.nombre, it.tipo, it.precio, it.cantidad, it.nota,
-      it.guarnicion_base_id, it.guarnicion_base, it.guarnicion_defecto, it.guarnicion_eleccion_id, it.guarnicion_eleccion, it.sopa);
+      it.guarnicion_base_id, it.guarnicion_base, it.guarnicion_defecto, it.guarnicion_eleccion_id, it.guarnicion_eleccion, it.sopa, it.refresco);
     total += it.precio * it.cantidad;
   }
   db.prepare('UPDATE comandas SET total = ?, actualizado_en = ? WHERE id = ?').run(redondear(total), ahora(), comandaId);
@@ -971,6 +985,70 @@ function notificarComanda(id, accion) {
   emitir('mesas');
 }
 
+// ---------------- atenciones ----------------
+function abrirAtencion(cab) {
+  const fecha = hoy();
+  const { n } = db.prepare('SELECT COALESCE(MAX(numero_dia),0)+1 AS n FROM atenciones WHERE fecha = ?').get(fecha);
+  return db
+    .prepare('INSERT INTO atenciones (numero_dia, fecha, tipo, mesa_id, cliente, creado_en) VALUES (?,?,?,?,?,?)')
+    .run(n, fecha, cab.tipo, cab.mesa_id, cab.cliente, ahora()).lastInsertRowid;
+}
+
+/** A qué atención va la comanda: la elegida (b.atencion_id), una nueva (b.nueva_atencion), la que ya tenía o la única abierta de la mesa */
+function elegirAtencion(cab, b, actual) {
+  // ponytail: para llevar, una atención por pedido; esa lógica se rediseña después
+  if (cab.tipo === 'llevar') return actual?.tipo === 'llevar' ? actual.id : abrirAtencion(cab);
+  if (b.nueva_atencion) return abrirAtencion(cab);
+  if (b.atencion_id) {
+    const a = db.prepare("SELECT * FROM atenciones WHERE id = ? AND estado = 'abierta'").get(Number(b.atencion_id));
+    if (!a || a.tipo !== 'local' || a.mesa_id !== cab.mesa_id) fail(400, 'La atención elegida ya no está abierta en esa mesa');
+    return a.id;
+  }
+  if (actual?.tipo === 'local' && actual.mesa_id === cab.mesa_id) return actual.id;
+  const abiertas = db
+    .prepare("SELECT id FROM atenciones WHERE estado = 'abierta' AND tipo = 'local' AND mesa_id = ? AND fecha = ?")
+    .all(cab.mesa_id, hoy());
+  if (abiertas.length > 1) fail(409, 'La mesa tiene varias atenciones abiertas: elija a cuál va la comanda');
+  return abiertas[0]?.id ?? abrirAtencion(cab);
+}
+
+/** Abierta mientras tenga algo por cobrar; sin comandas, se elimina */
+function actualizarAtencion(id) {
+  if (!id) return;
+  const r = db
+    .prepare("SELECT COUNT(*) AS total, COALESCE(SUM(pagada = 0 AND estado <> 'cancelado'), 0) AS pendientes FROM comandas WHERE atencion_id = ?")
+    .get(id);
+  if (!r.total) return db.prepare('DELETE FROM atenciones WHERE id = ?').run(id);
+  if (r.pendientes) db.prepare("UPDATE atenciones SET estado = 'abierta', cerrado_en = NULL WHERE id = ?").run(id);
+  else db.prepare("UPDATE atenciones SET estado = 'cerrada', cerrado_en = COALESCE(cerrado_en, ?) WHERE id = ?").run(ahora(), id);
+}
+
+// mesa unida sin nada pendiente: se separa sola
+function separarSiLibre(mesaId) {
+  if (mesaId && !db.prepare("SELECT 1 FROM comandas WHERE mesa_id = ? AND pagada = 0 AND estado <> 'cancelado' LIMIT 1").get(mesaId))
+    separarGrupo(mesaId);
+}
+
+// Pasar la atención entera (con sus comandas) a otra mesa
+app.post(
+  '/api/atenciones/:id/mover',
+  rol('admin', 'mozo', 'caja'),
+  ruta((req) => {
+    const a = db.prepare("SELECT * FROM atenciones WHERE id = ? AND estado = 'abierta' AND tipo = 'local'").get(Number(req.params.id));
+    if (!a) fail(404, 'Atención no encontrada o ya cerrada');
+    const { mesa_id, mesa_etiqueta } = validarCabecera({ tipo: 'local', mesa_id: req.body.mesa_id });
+    if (mesa_id !== a.mesa_id)
+      tx(() => {
+        db.prepare('UPDATE atenciones SET mesa_id = ? WHERE id = ?').run(mesa_id, a.id);
+        db.prepare('UPDATE comandas SET mesa_id = ?, mesa_etiqueta = ?, actualizado_en = ? WHERE atencion_id = ?').run(mesa_id, mesa_etiqueta, ahora(), a.id);
+        separarSiLibre(a.mesa_id);
+      });
+    emitir('mesas');
+    emitir('comandas', { accion: 'mesas' });
+    return { ok: true, mesa_etiqueta };
+  })
+);
+
 app.post(
   '/api/comandas',
   rol('admin', 'mozo', 'caja'),
@@ -983,12 +1061,13 @@ app.post(
     const id = tx(() => {
       const fecha = hoy();
       const { sig } = db.prepare('SELECT COALESCE(MAX(numero_dia),0)+1 AS sig FROM comandas WHERE fecha = ?').get(fecha);
+      const atencionId = elegirAtencion(cab, req.body, null);
       const nuevoId = db
         .prepare(
-          `INSERT INTO comandas (numero_dia, fecha, tipo, mesa_id, mesa_etiqueta, mozo_id, cliente, nota, estado, creado_en, actualizado_en)
-           VALUES (?,?,?,?,?,?,?,?, 'generado', ?, ?)`
+          `INSERT INTO comandas (numero_dia, fecha, tipo, mesa_id, mesa_etiqueta, mozo_id, cliente, nota, estado, atencion_id, creado_en, actualizado_en)
+           VALUES (?,?,?,?,?,?,?,?, 'generado', ?, ?, ?)`
         )
-        .run(sig, fecha, cab.tipo, cab.mesa_id, cab.mesa_etiqueta, mozoId, cab.cliente, cab.nota, ahora(), ahora()).lastInsertRowid;
+        .run(sig, fecha, cab.tipo, cab.mesa_id, cab.mesa_etiqueta, mozoId, cab.cliente, cab.nota, atencionId, ahora(), ahora()).lastInsertRowid;
       db.prepare('INSERT INTO comanda_historial (comanda_id, estado, usuario_id, fecha) VALUES (?,?,?,?)').run(nuevoId, 'generado', req.user.id, ahora());
       guardarItems(nuevoId, items);
       if (req.body.enviar) registrarEstado(nuevoId, 'enviado_cocina', req.user.id);
@@ -1006,14 +1085,18 @@ app.put(
   ruta((req) => {
     const c = comandaVisible(req);
     if (c.pagada) fail(400, 'La comanda ya está cobrada');
-    const editable = c.estado === 'generado' || (req.user.rol === 'admin' && !['entregado', 'cancelado'].includes(c.estado));
+    const editable = c.estado === 'generado' || (req.user.roles.includes('admin') && !['entregado', 'cancelado'].includes(c.estado));
     if (!editable) fail(400, 'Solo se pueden editar comandas que aún no se enviaron a cocina');
     const cab = validarCabecera(req.body);
     const items = prepararItems(req.body.items, cab.tipo);
     tx(() => {
-      db.prepare('UPDATE comandas SET tipo=?, mesa_id=?, mesa_etiqueta=?, cliente=?, nota=?, actualizado_en=? WHERE id=?').run(
-        cab.tipo, cab.mesa_id, cab.mesa_etiqueta, cab.cliente, cab.nota, ahora(), c.id
+      const actual = db.prepare('SELECT * FROM atenciones WHERE id = ?').get(c.atencion_id);
+      const atencionId = elegirAtencion(cab, req.body, actual);
+      if (cab.tipo === 'llevar') db.prepare('UPDATE atenciones SET cliente = ? WHERE id = ?').run(cab.cliente, atencionId);
+      db.prepare('UPDATE comandas SET tipo=?, mesa_id=?, mesa_etiqueta=?, cliente=?, nota=?, atencion_id=?, actualizado_en=? WHERE id=?').run(
+        cab.tipo, cab.mesa_id, cab.mesa_etiqueta, cab.cliente, cab.nota, atencionId, ahora(), c.id
       );
+      if (atencionId !== c.atencion_id) actualizarAtencion(c.atencion_id);
       guardarItems(c.id, items);
       // si ya estaba en cocina, el ticket se vuelve a imprimir marcado como modificado
       if (EN_COCINA.includes(c.estado)) db.prepare('UPDATE comandas SET ticket_impreso = 0, ticket_modificado = 1 WHERE id = ?').run(c.id);
@@ -1035,7 +1118,10 @@ app.post(
     const permitidos = TRANSICIONES[c.estado]?.[nuevo];
     if (!req.user.roles.includes('admin') && !(permitidos && permitidos.some((r) => req.user.roles.includes(r)))) fail(403, 'No puede hacer ese cambio de estado');
     if (nuevo === 'cancelado' && c.pagada) fail(400, 'Anule primero el cobro');
-    tx(() => registrarEstado(c.id, nuevo, req.user.id));
+    tx(() => {
+      registrarEstado(c.id, nuevo, req.user.id);
+      actualizarAtencion(c.atencion_id);
+    });
     notificarComanda(c.id, 'estado');
     if (nuevo === 'cancelado') impresora.descartarPendientes('comanda', c.id);
     ticketsAutomaticos(c.id);
@@ -1048,7 +1134,10 @@ app.delete(
   rol('admin'),
   ruta((req) => {
     const c = comandaVisible(req);
-    db.prepare('DELETE FROM comandas WHERE id = ?').run(c.id);
+    tx(() => {
+      db.prepare('DELETE FROM comandas WHERE id = ?').run(c.id);
+      actualizarAtencion(c.atencion_id);
+    });
     impresora.descartarPendientes('comanda', c.id);
     notificarComanda(c.id, 'eliminada');
     return { ok: true };
@@ -1266,13 +1355,8 @@ app.post(
         .run(hoy(), total, metodo, recibido, req.user.id, ahora(), tipoComprobante).lastInsertRowid;
       const upd = db.prepare('UPDATE comandas SET pagada = 1, cobro_id = ?, actualizado_en = ? WHERE id = ?');
       ids.forEach((cid) => upd.run(id, ahora(), cid));
-      // mesa unida sin nada pendiente: se separa sola
-      for (const mesaId of new Set(comandas.map((c) => c.mesa_id).filter(Boolean))) {
-        const pendiente = db
-          .prepare("SELECT 1 FROM comandas WHERE mesa_id = ? AND pagada = 0 AND estado <> 'cancelado' LIMIT 1")
-          .get(mesaId);
-        if (!pendiente) separarGrupo(mesaId);
-      }
+      new Set(comandas.map((c) => c.atencion_id)).forEach(actualizarAtencion);
+      new Set(comandas.map((c) => c.mesa_id)).forEach(separarSiLibre);
       if (xmlSunat) {
         const { comprobante: comp } = sunat.registrar(xmlSunat.d, xmlSunat.xml, req.user.id, ahora());
         sunat.vincular(comp.id, id);
@@ -1295,8 +1379,10 @@ app.post(
     if (!cobro || cobro.anulado) fail(404, 'Cobro no encontrado');
     const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
     tx(() => {
+      const atenciones = db.prepare('SELECT DISTINCT atencion_id FROM comandas WHERE cobro_id = ?').all(id);
       db.prepare('UPDATE cobros SET anulado = 1 WHERE id = ?').run(id);
       db.prepare('UPDATE comandas SET pagada = 0, cobro_id = NULL WHERE cobro_id = ?').run(id);
+      atenciones.forEach((r) => actualizarAtencion(r.atencion_id));
     });
     ids.forEach((cid) => notificarComanda(cid, 'pago'));
     return { ok: true };
