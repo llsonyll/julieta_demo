@@ -713,6 +713,90 @@ function detalleSunat(comandas, total) {
     </div>`;
 }
 
+const pendiente = (c) => !c.pagada && c.estado !== 'cancelado';
+const etiquetaAtencion = (c) => (c.atencion_numero ? `<span class="etiqueta at">ATENCIÓN #${c.atencion_numero}</span>` : '');
+
+/** Agrupa comandas por atención, en el orden en que aparecen: [[comanda, ...], ...] */
+function porAtencion(comandas) {
+  const g = new Map();
+  for (const c of comandas) {
+    const k = c.atencion_id ?? `c${c.id}`;
+    if (!g.has(k)) g.set(k, []);
+    g.get(k).push(c);
+  }
+  return [...g.values()];
+}
+
+/** Cobrar una atención: con una sola comanda pendiente va directo; si hay varias, se eligen cuáles (dividir la cuenta) */
+async function cobrarAtencion(atencionId) {
+  const cs = (await api('GET', '/api/comandas?vista=por_cobrar')).filter((c) => c.atencion_id === atencionId);
+  if (!cs.length) return toast('Esta atención no tiene nada por cobrar', 'error');
+  const titulo = `Cobrar atención #${cs[0].atencion_numero} · ${cs[0].tipo === 'local' ? `Mesa ${cs[0].mesa_numero}` : 'Para llevar'}`;
+  if (cs.length === 1) return abrirCobro(cs, titulo);
+  // ponytail: se divide por comanda; dividir platos de una misma comanda queda para cuando se necesite
+  const m = abrirModal(`
+    <div class="pila">
+      <div class="fila entre"><h3>${esc(titulo)}</h3><button class="btn chico" data-x>✕</button></div>
+      <div class="suave peq">Desmarque las comandas que se pagan aparte (cuenta dividida).</div>
+      ${cs
+        .map(
+          (c) => `<label class="toggle-fila on"><input type="checkbox" data-sel="${c.id}" checked>
+            <div class="crecer"><b>#${c.numero_dia}</b> <span class="suave peq">${esc(c.mozo_nombre || '')} · ${hora(c.creado_en)}</span>
+              <div class="suave peq">${c.items.map((i) => `${i.cantidad}× ${esc(i.nombre)}`).join(', ')}</div></div>
+            <b>${dinero(c.total)}</b></label>`
+        )
+        .join('')}
+      <button class="btn acento bloque" id="seguir"></button>
+    </div>`);
+  $('[data-x]', m).onclick = cerrarModal;
+  const elegidas = () => cs.filter((c) => $(`[data-sel="${c.id}"]`, m).checked);
+  const pintar = () => {
+    const e = elegidas();
+    const b = $('#seguir', m);
+    b.disabled = !e.length;
+    b.textContent = e.length === cs.length ? `💵 Cobrar todo (${dinero(e.reduce((s, c) => s + c.total, 0))})` : `💵 Cobrar ${e.length} de ${cs.length} (${dinero(e.reduce((s, c) => s + c.total, 0))})`;
+  };
+  $$('[data-sel]', m).forEach((x) => (x.onchange = pintar));
+  pintar();
+  $('#seguir', m).onclick = () => {
+    const e = elegidas();
+    cerrarModal();
+    abrirCobro(e, e.length === cs.length ? titulo : `${titulo} (parte)`);
+  };
+}
+
+/** Precuenta de lo pendiente: ids de comandas */
+const precuentaDe = (ids, ventana) =>
+  usaTicketeraCaja()
+    ? aTicketera('/api/imprimir/precuenta', { ids }, 'Precuenta enviada a la ticketera')
+    : imprimirPDF(`/api/precuenta.pdf?ids=${ids.join(',')}`, ventana);
+
+/** Pasar una atención a otra mesa */
+async function moverAtencion(atencionId, mesaActual) {
+  const mesas = (await api('GET', '/api/mesas')).filter((m) => m.activa && m.principal_id === m.id && m.id !== mesaActual);
+  const m = abrirModal(`
+    <div class="pila">
+      <div class="fila entre"><h3>Cambiar de mesa</h3><button class="btn chico" data-x>✕</button></div>
+      <div class="suave peq">Pasa la atención con todas sus comandas a otra mesa.</div>
+      <select class="entrada" id="destino"><option value="">— Elegir mesa —</option>
+        ${mesas.map((x) => `<option value="${x.id}">Mesa ${esc(x.etiqueta)} · ${esc(x.piso || '')} · ${x.ocupada ? 'ocupada' : 'libre'}</option>`).join('')}</select>
+      <button class="btn primario bloque" id="mover">Mover</button>
+    </div>`);
+  $('[data-x]', m).onclick = cerrarModal;
+  $('#mover', m).onclick = async () => {
+    const mesa_id = Number($('#destino', m).value);
+    if (!mesa_id) return toast('Elija la mesa', 'error');
+    try {
+      const r = await api('POST', `/api/atenciones/${atencionId}/mover`, { mesa_id });
+      cerrarModal();
+      toast(`Atención movida a la mesa ${r.mesa_etiqueta}`, 'ok');
+      recargarVista();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  };
+}
+
 function abrirCobro(comandas, titulo) {
   const total = comandas.reduce((s, c) => s + c.total, 0);
   const metodos = S.config.metodosPago || ['Efectivo'];
@@ -942,7 +1026,31 @@ const ACCIONES = {
   },
   'ver-comanda': (el) => ir(`#/comanda/${el.dataset.id}`),
   'editar-comanda': (el) => ir(`#/editar/${el.dataset.id}`),
-  'nueva-comanda': (el) => ir(`#/nueva${el.dataset.mesa ? `?mesa=${el.dataset.mesa}` : ''}`),
+  'nueva-comanda': (el) => {
+    const q = new URLSearchParams();
+    if (el.dataset.mesa) q.set('mesa', el.dataset.mesa);
+    if (el.dataset.atencion) q.set('atencion', el.dataset.atencion);
+    ir(`#/nueva${q.size ? `?${q}` : ''}`);
+  },
+  'cobrar-atencion': async (el) => {
+    try {
+      await cobrarAtencion(Number(el.dataset.atencion));
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  },
+  'precuenta-atencion': async (el) => {
+    const ventana = usaTicketeraCaja() ? null : prepararVentana(); // antes del await, para que el celular no bloquee la ventana
+    try {
+      const ids = (await api('GET', '/api/comandas?vista=por_cobrar')).filter((c) => c.atencion_id === Number(el.dataset.atencion)).map((c) => c.id);
+      if (!ids.length) throw new Error('No hay consumo pendiente para la precuenta');
+      precuentaDe(ids, ventana);
+    } catch (e) {
+      ventana?.close();
+      toast(e.message, 'error');
+    }
+  },
+  'mover-atencion': (el) => moverAtencion(Number(el.dataset.atencion), Number(el.dataset.mesa)).catch((e) => toast(e.message, 'error')),
   estado: async (el) => {
     const { id, estado } = el.dataset;
     if (estado === 'cancelado' && !(await confirmar('¿Cancelar esta comanda?', { ok: 'Sí, cancelar', peligro: true }))) return;
@@ -959,6 +1067,7 @@ const ACCIONES = {
   cobrar: async (el) => {
     try {
       const c = await api('GET', `/api/comandas/${el.dataset.id}`);
+      if (c.atencion_id) return cobrarAtencion(c.atencion_id);
       abrirCobro([c], `Cobrar comanda #${c.numero_dia}`);
     } catch (e) {
       toast(e.message, 'error');
@@ -1071,7 +1180,7 @@ function tarjetaComanda(c) {
   return `
     <div class="tarjeta comanda ${claseEstado(c.estado)}" data-accion="ver-comanda" data-id="${c.id}">
       <div class="fila entre"><span class="num">#${c.numero_dia}</span>${badge(c.estado)}</div>
-      <div class="fila envolver" style="margin-top:4px">${lugar(c)}
+      <div class="fila envolver" style="margin-top:4px">${lugar(c)} ${etiquetaAtencion(c)}
         <span class="suave peq">· ${esc(c.mozo_nombre || '')} · ${hora(c.creado_en)}</span>
         ${c.pagada ? `<span class="etiqueta pagada">PAGADA${c.metodo_pago ? ` · ${esc(c.metodo_pago.toUpperCase())}` : ''}</span>` : ''}
         ${pendienteTicket ? '<span class="etiqueta llevar">🖨️ TICKET PENDIENTE</span>' : ''}</div>
@@ -1109,13 +1218,39 @@ async function vComandas(main) {
       <div class="fila entre"><h2>Comandas</h2>
         <span class="suave peq">${lista.length} ${lista.length === 1 ? 'comanda' : 'comandas'}</span></div>
       ${chips(filtros, f, 'filtro')}
-      ${lista.length ? `<div class="grid">${lista.map(tarjetaComanda).join('')}</div>` : '<div class="vacio">No hay comandas en esta vista.</div>'}
+      ${lista.length ? (rol === 'cocina' ? `<div class="grid">${lista.map(tarjetaComanda).join('')}</div>` : porAtencion(lista).map(bloqueAtencion).join('')) : '<div class="vacio">No hay comandas en esta vista.</div>'}
     </div>
     <button class="btn primario fab" data-accion="nueva-comanda">＋ Nueva comanda</button>`;
   enlazarChips(main, 'filtro', (v) => {
     S.filtroComandas = v;
     vComandas(main);
   });
+}
+
+/** Una atención con sus comandas: cabecera con lugar, total pendiente y acciones */
+function bloqueAtencion(cs, { mesa = false } = {}) {
+  // totales de la atención completa (la vista puede mostrar solo parte de sus comandas)
+  const [c] = cs;
+  const porCobrar = c.atencion_id ? c.atencion_por_cobrar : cs.filter(pendiente).reduce((s, x) => s + x.total, 0);
+  const n = c.atencion_comandas ?? cs.length;
+  const acciones = [];
+  if (porCobrar > 0 && c.atencion_id) {
+    if (puede('admin', 'caja')) acciones.push(`<button class="btn chico acento" data-accion="cobrar-atencion" data-atencion="${c.atencion_id}">💵 Cobrar</button>`);
+    acciones.push(`<button class="btn chico" data-accion="precuenta-atencion" data-atencion="${c.atencion_id}">🧾 Precuenta</button>`);
+    if (c.tipo === 'local') {
+      acciones.push(`<button class="btn chico primario" data-accion="nueva-comanda" data-mesa="${c.mesa_id}" data-atencion="${c.atencion_id}">＋ Comanda</button>`);
+      acciones.push(`<button class="btn chico" data-accion="mover-atencion" data-atencion="${c.atencion_id}" data-mesa="${c.mesa_id}">⇄ Mesa</button>`);
+    }
+  }
+  return `
+    <section class="atencion">
+      <div class="atencion-cab">
+        <div><b>${c.atencion_numero ? `Atención #${c.atencion_numero}` : `Comanda #${c.numero_dia}`}</b> ${mesa ? '' : `· ${lugar(c)}`}
+          <span class="suave peq">· ${n} ${n === 1 ? 'comanda' : 'comandas'}${porCobrar ? ` · por cobrar <b>${dinero(porCobrar)}</b>` : ''}</span></div>
+        <div class="fila envolver">${acciones.join('')}</div>
+      </div>
+      <div class="grid">${cs.map(tarjetaComanda).join('')}</div>
+    </section>`;
 }
 
 // ---------- Detalle ----------
@@ -1153,7 +1288,7 @@ async function vComandaDetalle(main, r) {
       <div class="fila"><button class="btn chico" data-accion="volver">← Volver</button></div>
       <div class="tarjeta comanda ${claseEstado(c.estado)}" style="cursor:default">
         <div class="fila entre"><span class="num">Comanda #${c.numero_dia}</span>${badge(c.estado)}</div>
-        <div class="fila envolver" style="margin-top:6px">${lugar(c)}
+        <div class="fila envolver" style="margin-top:6px">${lugar(c)} ${etiquetaAtencion(c)}
           ${c.pagada ? `<span class="etiqueta pagada">PAGADA${c.metodo_pago ? ` · ${esc(c.metodo_pago.toUpperCase())}` : ''}</span>` : ''}</div>
         <div class="suave peq">Mozo: ${esc(c.mozo_nombre || '-')} · Creada ${hora(c.creado_en)} · ${esc(c.fecha)}</div>
         <div class="tabla-wrap" style="margin-top:10px"><table>
@@ -1184,11 +1319,19 @@ async function vComandaDetalle(main, r) {
 async function vEditorComanda(main, r, esRecarga) {
   if (esRecarga) return; // no se recarga en vivo para no perder lo que se está escribiendo
   const editando = r.nombre === 'editar';
-  const [todasMesas, carta, existente] = await Promise.all([
+  const [todasMesas, carta, existente, pendientes] = await Promise.all([
     api('GET', '/api/mesas'),
     api('GET', '/api/carta'),
     editando ? api('GET', `/api/comandas/${r.param}`) : null,
+    api('GET', '/api/comandas?vista=por_cobrar'),
   ]);
+  // atenciones abiertas de una mesa: [[comanda, ...], ...]
+  const atencionesDe = (mesaId) => porAtencion(pendientes.filter((c) => c.tipo === 'local' && c.mesa_id === mesaId && c.atencion_id));
+  // con una sola atención abierta va ahí; con varias hay que elegir; 'nueva' abre otra
+  const atencionPorDefecto = (mesaId) => {
+    const as = atencionesDe(mesaId);
+    return as.length === 1 ? as[0][0].atencion_id : null;
+  };
   // mesas unidas: se elige el grupo ("10-11"), que se guarda en la mesa principal
   const mesas = todasMesas.filter((m) => m.principal_id === m.id);
   const principalDe = (id) => todasMesas.find((m) => m.id === id)?.principal_id || null;
@@ -1208,6 +1351,7 @@ async function vEditorComanda(main, r, esRecarga) {
     mesa_id: existente?.mesa_id || principalDe(Number(r.query.get('mesa'))),
     cliente: existente?.cliente || '',
     nota: existente?.nota || '',
+    atencion: null, // id de atención | 'nueva' | null (la única abierta de la mesa, o una nueva si no hay)
     lineas: [], // { producto_id, cantidad, nota, base (id|null), eleccion (id|null) }
     estadoOriginal: existente?.estado || 'generado',
   };
@@ -1223,6 +1367,8 @@ async function vEditorComanda(main, r, esRecarga) {
         });
   const lineasGuardadas = JSON.stringify(b.lineas);
   if (r.query.get('mesa')) b.tipo = 'local';
+  const atencionQuery = r.query.get('atencion');
+  b.atencion = existente?.atencion_id || (atencionQuery === 'nueva' ? 'nueva' : Number(atencionQuery) || atencionPorDefecto(b.mesa_id));
   if (existente?.mesa_id && !mesas.find((m) => m.id === existente.mesa_id))
     mesas.push({ id: existente.mesa_id, numero: existente.mesa_numero, ocupada: true });
 
@@ -1431,6 +1577,24 @@ async function vEditorComanda(main, r, esRecarga) {
     );
   }
 
+  // Selector de atención: solo si la mesa ya tiene alguna abierta
+  function htmlAtencion() {
+    const as = atencionesDe(b.mesa_id);
+    if (!as.length) return '';
+    const opt = (v, t) => `<option value="${v}" ${String(b.atencion) === String(v) ? 'selected' : ''}>${t}</option>`;
+    return `<select class="entrada" id="atencion" aria-label="Atención">
+      ${as.length > 1 && !b.atencion ? opt('', '— ¿A qué atención va? —') : ''}
+      ${as
+        .map((cs) => {
+          const c = cs[0];
+          const t = `Atención #${c.atencion_numero} · ${cs.length} comanda(s) · ${dinero(cs.reduce((s, x) => s + x.total, 0))}${c.mozo_nombre ? ` · ${esc(c.mozo_nombre)}` : ''}`;
+          return opt(c.atencion_id, t);
+        })
+        .join('')}
+      ${opt('nueva', '＋ Nueva atención (otro cliente)')}
+    </select>`;
+  }
+
   function render() {
     const m = mesaSel();
     const titulo = b.tipo === 'llevar' ? 'Para llevar' : m ? `Mesa ${esc(m.etiqueta)}` : 'Elija una mesa';
@@ -1476,6 +1640,7 @@ async function vEditorComanda(main, r, esRecarga) {
                   </select>`
                 : `<input class="entrada" id="cliente" value="${esc(b.cliente)}" placeholder="Nombre del cliente / referencia" autocomplete="off">`
             }
+            ${b.tipo === 'local' ? htmlAtencion() : ''}
             <div id="pedido" class="lista-pedido">${htmlPedido()}</div>
             <textarea class="entrada" id="nota" rows="2" placeholder="Nota general para cocina (ej: alérgico al maní)">${esc(b.nota)}</textarea>
             <div class="fila entre total-pedido"><span>Total</span><b data-total>${dinero(total())}</b></div>
@@ -1504,8 +1669,11 @@ async function vEditorComanda(main, r, esRecarga) {
     if (mesa)
       mesa.onchange = () => {
         b.mesa_id = Number(mesa.value) || null;
+        b.atencion = atencionPorDefecto(b.mesa_id);
         render();
       };
+    const at = $('#atencion', main);
+    if (at) at.onchange = () => (b.atencion = at.value === 'nueva' ? 'nueva' : Number(at.value) || null);
     const cli = $('#cliente', main);
     if (cli) cli.oninput = () => (b.cliente = cli.value);
     $('#nota', main).oninput = (e) => (b.nota = e.target.value);
@@ -1522,18 +1690,18 @@ async function vEditorComanda(main, r, esRecarga) {
     enlazarPedido();
   }
 
-  // La precuenta sale de lo guardado: de la mesa entera, o de esta comanda si es para llevar
+  // La precuenta sale de lo guardado: de la atención entera, o de esta comanda si es para llevar
   async function precuenta() {
     if (JSON.stringify(b.lineas) !== lineasGuardadas) return toast('Guarde los cambios antes de imprimir la precuenta', 'error');
     const ventana = usaTicketeraCaja() ? null : prepararVentana(); // antes del await, para que el celular no bloquee la ventana
     try {
-      const ids =
-        b.tipo === 'local' && b.mesa_id
-          ? (await api('GET', '/api/comandas?vista=por_cobrar')).filter((c) => c.mesa_id === b.mesa_id).map((c) => c.id)
-          : b.id ? [b.id] : [];
+      // de toda la atención (lo pendiente), o de esta comanda si no tiene
+      const atencionId = typeof b.atencion === 'number' ? b.atencion : existente?.atencion_id;
+      const ids = atencionId
+        ? (await api('GET', '/api/comandas?vista=por_cobrar')).filter((c) => c.atencion_id === atencionId).map((c) => c.id)
+        : b.id ? [b.id] : [];
       if (!ids.length) throw new Error('Todavía no hay comandas guardadas para la precuenta');
-      if (usaTicketeraCaja()) aTicketera('/api/imprimir/precuenta', { ids }, 'Precuenta enviada a la ticketera');
-      else imprimirPDF(`/api/precuenta.pdf?ids=${ids.join(',')}`, ventana);
+      precuentaDe(ids, ventana);
     } catch (e) {
       ventana?.close();
       toast(e.message, 'error');
@@ -1542,10 +1710,13 @@ async function vEditorComanda(main, r, esRecarga) {
 
   async function guardar(enviar) {
     if (b.tipo === 'local' && !b.mesa_id) return toast('Seleccione una mesa', 'error');
+    if (b.tipo === 'local' && !b.atencion && atencionesDe(b.mesa_id).length > 1) return toast('Elija a qué atención va la comanda', 'error');
     if (!b.lineas.length) return toast('Agregue al menos un plato', 'error');
     const cuerpo = {
       tipo: b.tipo,
       mesa_id: b.tipo === 'local' ? b.mesa_id : null,
+      atencion_id: b.tipo === 'local' && typeof b.atencion === 'number' ? b.atencion : null,
+      nueva_atencion: b.tipo === 'local' && b.atencion === 'nueva',
       cliente: b.cliente,
       nota: b.nota,
       enviar,
@@ -2031,25 +2202,26 @@ async function vMesas(main) {
         const separar = grupo.length > 1 ? `<button class="btn bloque" id="separar">✂️ Separar mesas ${esc(p.etiqueta)}</button>` : '';
         if (!cs.length && !separar) return ir(`#/nueva?mesa=${p.id}`);
         const total = cs.reduce((s, c) => s + c.total, 0);
+        const atenciones = porAtencion(cs);
+        // varias atenciones en la mesa (mesa compartida): también se puede cobrar todo junto
+        const varias = atenciones.length > 1;
         const modal = abrirModal(`
           <div class="pila">
             <div class="fila entre"><h3>Mesa ${esc(p.etiqueta)} <span class="suave peq">· ${esc(p.piso)}</span></h3><button class="btn chico" data-x>✕</button></div>
-            <div class="suave">${cs.length ? `Consumo: <b>${dinero(total)}</b>` : 'Libre'}</div>
-            ${cs.length && puede('admin', 'caja') ? `<button class="btn acento bloque" id="cobrar-mesa">💵 Cobrar mesa completa (${dinero(total)})</button>` : ''}
-            ${cs.length ? `<button class="btn bloque" id="precuenta-mesa">🧾 Precuenta (${dinero(total)})</button>` : ''}
-            ${cs.map(tarjetaComanda).join('')}
-            <button class="btn primario bloque" data-accion="nueva-comanda" data-mesa="${p.id}">＋ ${cs.length ? 'Agregar otra comanda' : 'Nueva comanda'}</button>
+            <div class="suave">${cs.length ? `Consumo: <b>${dinero(total)}</b>${varias ? ` · ${atenciones.length} atenciones` : ''}` : 'Libre'}</div>
+            ${varias && puede('admin', 'caja') ? `<button class="btn acento bloque" id="cobrar-mesa">💵 Cobrar mesa completa (${dinero(total)})</button>` : ''}
+            ${varias ? `<button class="btn bloque" id="precuenta-mesa">🧾 Precuenta de toda la mesa (${dinero(total)})</button>` : ''}
+            ${atenciones.map((a) => bloqueAtencion(a, { mesa: true })).join('')}
+            ${cs.length
+              ? `<button class="btn bloque" data-accion="nueva-comanda" data-mesa="${p.id}" data-atencion="nueva">＋ Nueva atención (otro cliente en la mesa)</button>`
+              : `<button class="btn primario bloque" data-accion="nueva-comanda" data-mesa="${p.id}">＋ Nueva comanda</button>`}
             ${separar}
           </div>`);
         $('[data-x]', modal).onclick = cerrarModal;
         const cm = $('#cobrar-mesa', modal);
         if (cm) cm.onclick = () => abrirCobro(cs, `Cobrar mesa ${p.etiqueta}`);
         const pc = $('#precuenta-mesa', modal);
-        if (pc)
-          pc.onclick = () =>
-            usaTicketeraCaja()
-              ? aTicketera('/api/imprimir/precuenta', { ids: cs.map((c) => c.id) }, 'Precuenta enviada a la ticketera')
-              : imprimirPDF(`/api/precuenta.pdf?ids=${cs.map((c) => c.id).join(',')}`);
+        if (pc) pc.onclick = () => precuentaDe(cs.map((c) => c.id));
         const sp = $('#separar', modal);
         if (sp)
           sp.onclick = async () => {

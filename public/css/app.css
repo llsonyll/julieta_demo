@@ -541,3 +541,10 @@ main:has(.editor) { max-width: none; padding-bottom: 16px; }
 .qr-red { width: 240px; height: 240px; background: #fff; border-radius: 12px; padding: 6px; border: 1px solid var(--borde, #e3e7ee); }
 .url-red { font-size: 1.4rem; font-weight: 800; letter-spacing: .3px; word-break: break-all; }
 .pasos-red { text-align: left; margin: 0; padding-left: 20px; }
+
+/* Atención: agrupa las comandas de un mismo cliente o mesa */
+.atencion { border: 1px solid var(--borde); border-radius: var(--radio); padding: 10px; background: #f8fafc; }
+.atencion + .atencion { margin-top: 12px; }
+.atencion-cab { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.etiqueta.at { background: #e0e7ff; color: #3730a3; }
+.atencion .etiqueta.at { display: none; } /* dentro del bloque ya se sabe la atención */

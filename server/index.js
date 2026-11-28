@@ -453,9 +453,10 @@ app.post(
     tx(() => {
       for (const m of miembros) db.prepare('UPDATE mesas SET unida_a = ? WHERE id = ?').run(m.id === principal.id ? null : principal.id, m.id);
       // las comandas abiertas de las otras mesas pasan a la principal
-      db.prepare(
-        `UPDATE comandas SET mesa_id = ? WHERE pagada = 0 AND estado <> 'cancelado' AND mesa_id IN (${otras.map(() => '?').join(',')})`
-      ).run(principal.id, ...otras);
+      const enOtras = `IN (${otras.map(() => '?').join(',')})`;
+      db.prepare(`UPDATE comandas SET mesa_id = ? WHERE pagada = 0 AND estado <> 'cancelado' AND mesa_id ${enOtras}`).run(principal.id, ...otras);
+      // sus atenciones abiertas también pasan a la principal (siguen separadas: cada cliente con su cuenta)
+      db.prepare(`UPDATE atenciones SET mesa_id = ? WHERE estado = 'abierta' AND mesa_id ${enOtras}`).run(principal.id, ...otras);
       refrescarEtiquetas(principal.id);
     });
     emitir('mesas');
@@ -800,6 +801,9 @@ app.post(
 // ---------------- comandas ----------------
 const SQL_COMANDA = `
   SELECT c.*, COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero) AS mesa_numero, m.piso AS mesa_piso, u.nombre AS mozo_nombre,
+    a.numero_dia AS atencion_numero,
+    (SELECT COUNT(*) FROM comandas x WHERE x.atencion_id = c.atencion_id) AS atencion_comandas,
+    (SELECT COALESCE(SUM(x.total), 0) FROM comandas x WHERE x.atencion_id = c.atencion_id AND x.pagada = 0 AND x.estado <> 'cancelado') AS atencion_por_cobrar,
     co.metodo AS metodo_pago, co.comprobante AS cobro_comprobante,
     (SELECT s.id FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_id,
     (SELECT s.serie || '-' || s.numero FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_numero,
@@ -808,6 +812,7 @@ const SQL_COMANDA = `
   FROM comandas c
   LEFT JOIN mesas m ON m.id = c.mesa_id
   LEFT JOIN usuarios u ON u.id = c.mozo_id
+  LEFT JOIN atenciones a ON a.id = c.atencion_id
   LEFT JOIN cobros co ON co.id = c.cobro_id`;
 
 function adjuntarItems(comandas) {
@@ -980,6 +985,70 @@ function notificarComanda(id, accion) {
   emitir('mesas');
 }
 
+// ---------------- atenciones ----------------
+function abrirAtencion(cab) {
+  const fecha = hoy();
+  const { n } = db.prepare('SELECT COALESCE(MAX(numero_dia),0)+1 AS n FROM atenciones WHERE fecha = ?').get(fecha);
+  return db
+    .prepare('INSERT INTO atenciones (numero_dia, fecha, tipo, mesa_id, cliente, creado_en) VALUES (?,?,?,?,?,?)')
+    .run(n, fecha, cab.tipo, cab.mesa_id, cab.cliente, ahora()).lastInsertRowid;
+}
+
+/** A qué atención va la comanda: la elegida (b.atencion_id), una nueva (b.nueva_atencion), la que ya tenía o la única abierta de la mesa */
+function elegirAtencion(cab, b, actual) {
+  // ponytail: para llevar, una atención por pedido; esa lógica se rediseña después
+  if (cab.tipo === 'llevar') return actual?.tipo === 'llevar' ? actual.id : abrirAtencion(cab);
+  if (b.nueva_atencion) return abrirAtencion(cab);
+  if (b.atencion_id) {
+    const a = db.prepare("SELECT * FROM atenciones WHERE id = ? AND estado = 'abierta'").get(Number(b.atencion_id));
+    if (!a || a.tipo !== 'local' || a.mesa_id !== cab.mesa_id) fail(400, 'La atención elegida ya no está abierta en esa mesa');
+    return a.id;
+  }
+  if (actual?.tipo === 'local' && actual.mesa_id === cab.mesa_id) return actual.id;
+  const abiertas = db
+    .prepare("SELECT id FROM atenciones WHERE estado = 'abierta' AND tipo = 'local' AND mesa_id = ? AND fecha = ?")
+    .all(cab.mesa_id, hoy());
+  if (abiertas.length > 1) fail(409, 'La mesa tiene varias atenciones abiertas: elija a cuál va la comanda');
+  return abiertas[0]?.id ?? abrirAtencion(cab);
+}
+
+/** Abierta mientras tenga algo por cobrar; sin comandas, se elimina */
+function actualizarAtencion(id) {
+  if (!id) return;
+  const r = db
+    .prepare("SELECT COUNT(*) AS total, COALESCE(SUM(pagada = 0 AND estado <> 'cancelado'), 0) AS pendientes FROM comandas WHERE atencion_id = ?")
+    .get(id);
+  if (!r.total) return db.prepare('DELETE FROM atenciones WHERE id = ?').run(id);
+  if (r.pendientes) db.prepare("UPDATE atenciones SET estado = 'abierta', cerrado_en = NULL WHERE id = ?").run(id);
+  else db.prepare("UPDATE atenciones SET estado = 'cerrada', cerrado_en = COALESCE(cerrado_en, ?) WHERE id = ?").run(ahora(), id);
+}
+
+// mesa unida sin nada pendiente: se separa sola
+function separarSiLibre(mesaId) {
+  if (mesaId && !db.prepare("SELECT 1 FROM comandas WHERE mesa_id = ? AND pagada = 0 AND estado <> 'cancelado' LIMIT 1").get(mesaId))
+    separarGrupo(mesaId);
+}
+
+// Pasar la atención entera (con sus comandas) a otra mesa
+app.post(
+  '/api/atenciones/:id/mover',
+  rol('admin', 'mozo', 'caja'),
+  ruta((req) => {
+    const a = db.prepare("SELECT * FROM atenciones WHERE id = ? AND estado = 'abierta' AND tipo = 'local'").get(Number(req.params.id));
+    if (!a) fail(404, 'Atención no encontrada o ya cerrada');
+    const { mesa_id, mesa_etiqueta } = validarCabecera({ tipo: 'local', mesa_id: req.body.mesa_id });
+    if (mesa_id !== a.mesa_id)
+      tx(() => {
+        db.prepare('UPDATE atenciones SET mesa_id = ? WHERE id = ?').run(mesa_id, a.id);
+        db.prepare('UPDATE comandas SET mesa_id = ?, mesa_etiqueta = ?, actualizado_en = ? WHERE atencion_id = ?').run(mesa_id, mesa_etiqueta, ahora(), a.id);
+        separarSiLibre(a.mesa_id);
+      });
+    emitir('mesas');
+    emitir('comandas', { accion: 'mesas' });
+    return { ok: true, mesa_etiqueta };
+  })
+);
+
 app.post(
   '/api/comandas',
   rol('admin', 'mozo', 'caja'),
@@ -992,12 +1061,13 @@ app.post(
     const id = tx(() => {
       const fecha = hoy();
       const { sig } = db.prepare('SELECT COALESCE(MAX(numero_dia),0)+1 AS sig FROM comandas WHERE fecha = ?').get(fecha);
+      const atencionId = elegirAtencion(cab, req.body, null);
       const nuevoId = db
         .prepare(
-          `INSERT INTO comandas (numero_dia, fecha, tipo, mesa_id, mesa_etiqueta, mozo_id, cliente, nota, estado, creado_en, actualizado_en)
-           VALUES (?,?,?,?,?,?,?,?, 'generado', ?, ?)`
+          `INSERT INTO comandas (numero_dia, fecha, tipo, mesa_id, mesa_etiqueta, mozo_id, cliente, nota, estado, atencion_id, creado_en, actualizado_en)
+           VALUES (?,?,?,?,?,?,?,?, 'generado', ?, ?, ?)`
         )
-        .run(sig, fecha, cab.tipo, cab.mesa_id, cab.mesa_etiqueta, mozoId, cab.cliente, cab.nota, ahora(), ahora()).lastInsertRowid;
+        .run(sig, fecha, cab.tipo, cab.mesa_id, cab.mesa_etiqueta, mozoId, cab.cliente, cab.nota, atencionId, ahora(), ahora()).lastInsertRowid;
       db.prepare('INSERT INTO comanda_historial (comanda_id, estado, usuario_id, fecha) VALUES (?,?,?,?)').run(nuevoId, 'generado', req.user.id, ahora());
       guardarItems(nuevoId, items);
       if (req.body.enviar) registrarEstado(nuevoId, 'enviado_cocina', req.user.id);
@@ -1020,9 +1090,13 @@ app.put(
     const cab = validarCabecera(req.body);
     const items = prepararItems(req.body.items, cab.tipo);
     tx(() => {
-      db.prepare('UPDATE comandas SET tipo=?, mesa_id=?, mesa_etiqueta=?, cliente=?, nota=?, actualizado_en=? WHERE id=?').run(
-        cab.tipo, cab.mesa_id, cab.mesa_etiqueta, cab.cliente, cab.nota, ahora(), c.id
+      const actual = db.prepare('SELECT * FROM atenciones WHERE id = ?').get(c.atencion_id);
+      const atencionId = elegirAtencion(cab, req.body, actual);
+      if (cab.tipo === 'llevar') db.prepare('UPDATE atenciones SET cliente = ? WHERE id = ?').run(cab.cliente, atencionId);
+      db.prepare('UPDATE comandas SET tipo=?, mesa_id=?, mesa_etiqueta=?, cliente=?, nota=?, atencion_id=?, actualizado_en=? WHERE id=?').run(
+        cab.tipo, cab.mesa_id, cab.mesa_etiqueta, cab.cliente, cab.nota, atencionId, ahora(), c.id
       );
+      if (atencionId !== c.atencion_id) actualizarAtencion(c.atencion_id);
       guardarItems(c.id, items);
       // si ya estaba en cocina, el ticket se vuelve a imprimir marcado como modificado
       if (EN_COCINA.includes(c.estado)) db.prepare('UPDATE comandas SET ticket_impreso = 0, ticket_modificado = 1 WHERE id = ?').run(c.id);
@@ -1044,7 +1118,10 @@ app.post(
     const permitidos = TRANSICIONES[c.estado]?.[nuevo];
     if (!req.user.roles.includes('admin') && !(permitidos && permitidos.some((r) => req.user.roles.includes(r)))) fail(403, 'No puede hacer ese cambio de estado');
     if (nuevo === 'cancelado' && c.pagada) fail(400, 'Anule primero el cobro');
-    tx(() => registrarEstado(c.id, nuevo, req.user.id));
+    tx(() => {
+      registrarEstado(c.id, nuevo, req.user.id);
+      actualizarAtencion(c.atencion_id);
+    });
     notificarComanda(c.id, 'estado');
     if (nuevo === 'cancelado') impresora.descartarPendientes('comanda', c.id);
     ticketsAutomaticos(c.id);
@@ -1057,7 +1134,10 @@ app.delete(
   rol('admin'),
   ruta((req) => {
     const c = comandaVisible(req);
-    db.prepare('DELETE FROM comandas WHERE id = ?').run(c.id);
+    tx(() => {
+      db.prepare('DELETE FROM comandas WHERE id = ?').run(c.id);
+      actualizarAtencion(c.atencion_id);
+    });
     impresora.descartarPendientes('comanda', c.id);
     notificarComanda(c.id, 'eliminada');
     return { ok: true };
@@ -1275,13 +1355,8 @@ app.post(
         .run(hoy(), total, metodo, recibido, req.user.id, ahora(), tipoComprobante).lastInsertRowid;
       const upd = db.prepare('UPDATE comandas SET pagada = 1, cobro_id = ?, actualizado_en = ? WHERE id = ?');
       ids.forEach((cid) => upd.run(id, ahora(), cid));
-      // mesa unida sin nada pendiente: se separa sola
-      for (const mesaId of new Set(comandas.map((c) => c.mesa_id).filter(Boolean))) {
-        const pendiente = db
-          .prepare("SELECT 1 FROM comandas WHERE mesa_id = ? AND pagada = 0 AND estado <> 'cancelado' LIMIT 1")
-          .get(mesaId);
-        if (!pendiente) separarGrupo(mesaId);
-      }
+      new Set(comandas.map((c) => c.atencion_id)).forEach(actualizarAtencion);
+      new Set(comandas.map((c) => c.mesa_id)).forEach(separarSiLibre);
       if (xmlSunat) {
         const { comprobante: comp } = sunat.registrar(xmlSunat.d, xmlSunat.xml, req.user.id, ahora());
         sunat.vincular(comp.id, id);
@@ -1304,8 +1379,10 @@ app.post(
     if (!cobro || cobro.anulado) fail(404, 'Cobro no encontrado');
     const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
     tx(() => {
+      const atenciones = db.prepare('SELECT DISTINCT atencion_id FROM comandas WHERE cobro_id = ?').all(id);
       db.prepare('UPDATE cobros SET anulado = 1 WHERE id = ?').run(id);
       db.prepare('UPDATE comandas SET pagada = 0, cobro_id = NULL WHERE cobro_id = ?').run(id);
+      atenciones.forEach((r) => actualizarAtencion(r.atencion_id));
     });
     ids.forEach((cid) => notificarComanda(cid, 'pago'));
     return { ok: true };
