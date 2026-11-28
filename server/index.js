@@ -600,7 +600,9 @@ app.get(
   })
 );
 
-function validarProducto(b) {
+// previo: el plato que se edita. Disponible y activo se manejan desde la carta;
+// si no vienen, se conservan (al crear: ambos en 1). Todo plato se vende en mesa y para llevar.
+function validarProducto(b, previo = null) {
   const nombre = texto(b.nombre, 120);
   if (!nombre) fail(400, 'El nombre es obligatorio');
   const tipo = ['menu', 'extra', 'bebidas'].includes(b.tipo) ? b.tipo : fail(400, 'Indique si es menú, extra o bebida');
@@ -622,16 +624,12 @@ function validarProducto(b) {
     menu_rol,
     guarnicion_base_id,
     con_eleccion: sinGuarnicion ? 0 : bool(b.con_eleccion),
-    para_local: b.para_local === undefined ? 1 : bool(b.para_local),
-    para_llevar: b.para_llevar === undefined ? 1 : bool(b.para_llevar),
-    disponible: b.disponible === undefined ? 1 : bool(b.disponible),
-    activo: b.activo === undefined ? 1 : bool(b.activo),
   };
-  if (!p.para_local && !p.para_llevar) fail(400, 'Debe estar disponible para mesa y/o para llevar');
+  for (const k of ['disponible', 'activo']) p[k] = b[k] === undefined ? (previo ? previo[k] : 1) : bool(b[k]);
   return p;
 }
-const COLS_P = 'nombre, descripcion, categoria, precio, tipo, menu_rol, guarnicion_base_id, con_eleccion, para_local, para_llevar, disponible, activo';
-const valoresP = (p) => [p.nombre, p.descripcion, p.categoria, p.precio, p.tipo, p.menu_rol, p.guarnicion_base_id, p.con_eleccion, p.para_local, p.para_llevar, p.disponible, p.activo];
+const COLS_P = 'nombre, descripcion, categoria, precio, tipo, menu_rol, guarnicion_base_id, con_eleccion, disponible, activo';
+const valoresP = (p) => [p.nombre, p.descripcion, p.categoria, p.precio, p.tipo, p.menu_rol, p.guarnicion_base_id, p.con_eleccion, p.disponible, p.activo];
 
 app.post(
   '/api/productos',
@@ -639,7 +637,7 @@ app.post(
   ruta((req) => {
     const p = validarProducto(req.body);
     const id = tx(() => {
-      const nuevo = db.prepare(`INSERT INTO productos (${COLS_P}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(...valoresP(p)).lastInsertRowid;
+      const nuevo = db.prepare(`INSERT INTO productos (${COLS_P}) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(...valoresP(p)).lastInsertRowid;
       // una sopa, refresco o segundo variable creado se agrega al menú de la fecha indicada (por defecto, hoy)
       if (p.tipo === 'menu' && p.menu_rol !== 'fijo' && req.body.agregar_a_fecha !== false)
         incluirEnMenu(esFecha(req.body.agregar_a_fecha) ? req.body.agregar_a_fecha : hoy(), nuevo);
@@ -655,8 +653,9 @@ app.put(
   rol('admin'),
   ruta((req) => {
     const id = Number(req.params.id);
-    if (!db.prepare('SELECT 1 FROM productos WHERE id = ?').get(id)) fail(404, 'Plato no encontrado');
-    const p = validarProducto(req.body);
+    const previo = db.prepare('SELECT * FROM productos WHERE id = ?').get(id);
+    if (!previo) fail(404, 'Plato no encontrado');
+    const p = validarProducto(req.body, previo);
     db.prepare(`UPDATE productos SET ${COLS_P.split(', ').map((c) => `${c}=?`).join(', ')} WHERE id = ?`).run(...valoresP(p), id);
     emitir('productos');
     return db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`).get(id);
@@ -681,12 +680,16 @@ app.delete(
   rol('admin'),
   ruta((req) => {
     const id = Number(req.params.id);
-    if (db.prepare('SELECT 1 FROM comanda_items WHERE producto_id = ? LIMIT 1').get(id)) {
-      db.prepare('UPDATE productos SET activo = 0 WHERE id = ?').run(id);
-      emitir('productos');
-      return { ok: true, desactivado: true };
-    }
-    db.prepare('DELETE FROM productos WHERE id = ?').run(id);
+    // las ventas guardan nombre y precio del plato: borrarlo no cambia comandas, cobros ni reportes.
+    // Solo se impide si está en una comanda sin cobrar (al editarla se perdería esa línea).
+    const abierta = db
+      .prepare(
+        `SELECT c.numero_dia FROM comanda_items i JOIN comandas c ON c.id = i.comanda_id
+         WHERE i.producto_id = ? AND c.pagada = 0 AND c.estado <> 'cancelado' LIMIT 1`
+      )
+      .get(id);
+    if (abierta) fail(409, `El plato está en la comanda #${abierta.numero_dia}, que aún no se cobra. Elimínelo cuando se cobre, o márquelo inactivo.`);
+    if (!db.prepare('DELETE FROM productos WHERE id = ?').run(id).changes) fail(404, 'Plato no encontrado');
     emitir('productos');
     return { ok: true };
   })
@@ -902,7 +905,7 @@ app.get(
 app.get('/api/comandas/:id', ruta((req) => comandaVisible(req)));
 
 // Valida los ítems y toma nombres/precios del catálogo
-function prepararItems(itemsBody, tipo) {
+function prepararItems(itemsBody) {
   if (!Array.isArray(itemsBody) || !itemsBody.length) fail(400, 'Agregue al menos un plato');
   const getP = db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`);
   const getG = db.prepare('SELECT * FROM guarniciones WHERE id = ?');
@@ -911,8 +914,6 @@ function prepararItems(itemsBody, tipo) {
   return itemsBody.map((it) => {
     const p = getP.get(Number(it.producto_id));
     if (!p || !p.activo) fail(400, 'Uno de los platos ya no existe');
-    if (tipo === 'local' && !p.para_local) fail(400, `"${p.nombre}" no está disponible para mesa`);
-    if (tipo === 'llevar' && !p.para_llevar) fail(400, `"${p.nombre}" no está disponible para llevar`);
     const cantidad = Math.max(1, Math.min(99, parseInt(it.cantidad, 10) || 1));
     // Menú: se elige el segundo, la sopa y el refresco del día van incluidos y se cobra el precio fijo
     const esMenu = p.tipo === 'menu';
@@ -1071,7 +1072,7 @@ app.post(
   rol('admin', 'mozo', 'caja'),
   ruta((req) => {
     const cab = validarCabecera(req.body);
-    const items = prepararItems(req.body.items, cab.tipo);
+    const items = prepararItems(req.body.items);
     const agotado = items.find((i) => !i.disponible);
     if (agotado) fail(400, `"${agotado.nombre}" está agotado`);
     const mozoId = req.user.id;
@@ -1105,7 +1106,7 @@ app.put(
     const editable = c.estado === 'generado' || (req.user.roles.includes('admin') && !['entregado', 'cancelado'].includes(c.estado));
     if (!editable) fail(400, 'Solo se pueden editar comandas que aún no se enviaron a cocina');
     const cab = validarCabecera(req.body);
-    const items = prepararItems(req.body.items, cab.tipo);
+    const items = prepararItems(req.body.items);
     tx(() => {
       const actual = db.prepare('SELECT * FROM atenciones WHERE id = ?').get(c.atencion_id);
       const atencionId = elegirAtencion(cab, req.body, actual);

@@ -1582,7 +1582,6 @@ async function vEditorComanda(main, r, esRecarga) {
   let categoria = 'todos';
   let busqueda = '';
   const mesaSel = () => mesas.find((m) => m.id === b.mesa_id);
-  const vendible = (p) => (b.tipo === 'local' ? p.para_local : p.para_llevar);
 
   function tarjetaPlato(p) {
     const n = cantidadDe(p.id);
@@ -1597,7 +1596,7 @@ async function vEditorComanda(main, r, esRecarga) {
   }
 
   function pintarCarta() {
-    const deCarta = (pestana === 'menu' ? carta.menu : pestana === 'bebidas' ? (carta.bebidas || []) : carta.extras).filter(vendible);
+    const deCarta = (pestana === 'menu' ? carta.menu : pestana === 'bebidas' ? (carta.bebidas || []) : carta.extras);
     const cats = [...new Set(deCarta.map((p) => p.categoria || 'Otros'))];
     if (!cats.includes(categoria)) categoria = 'todos';
     const q = busqueda.toLowerCase();
@@ -1763,7 +1762,6 @@ async function vEditorComanda(main, r, esRecarga) {
       (el) =>
         (el.onclick = () => {
           b.tipo = el.dataset.tipo;
-          b.lineas = b.lineas.filter((l) => vendible(porId.get(l.producto_id)));
           render();
         })
     );
@@ -2738,10 +2736,6 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
     },
     { n: 'con_eleccion', l: 'Lleva una guarnición a elección', t: 'check', def: tipo !== 'bebidas', ayuda: 'Ej: picante de lisas, kapchi… (las que se ofrecen ese día)' },
     { n: 'categoria', l: 'Categoría (para ordenar la carta)', lista: categorias, def: tipo === 'bebidas' ? 'Bebidas' : tipo === 'extra' ? 'Fondos' : 'Menú del día' },
-    { n: 'para_local', l: 'Se sirve en mesa', t: 'check', def: true },
-    { n: 'para_llevar', l: 'Se vende para llevar', t: 'check', def: true },
-    { n: 'disponible', l: 'Hay stock (desmarcar = agotado)', t: 'check', def: true },
-    { n: 'activo', l: 'Activo', t: 'check', def: true },
     { n: 'descripcion', l: 'Descripción (opcional)' },
   ];
   const f = formulario({
@@ -2754,9 +2748,9 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
     },
     eliminar: p
       ? async () => {
-          const r = await api('DELETE', `/api/productos/${p.id}`);
+          await api('DELETE', `/api/productos/${p.id}`);
           cerrarModal();
-          toast(r.desactivado ? 'El plato tiene ventas: se desactivó' : 'Plato eliminado', 'ok');
+          toast('Plato eliminado', 'ok');
         }
       : null,
   });
