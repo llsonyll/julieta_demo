@@ -304,6 +304,52 @@ function tx(fn) {
   }
 }
 
+// ---------- atenciones: la visita de un cliente (o grupo) a una mesa; agrupa sus comandas ----------
+// Abierta mientras tenga comandas pendientes de cobro. Una mesa puede tener varias atenciones abiertas (mesa compartida).
+db.exec(`
+CREATE TABLE IF NOT EXISTS atenciones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  numero_dia INTEGER NOT NULL,
+  fecha TEXT NOT NULL,
+  tipo TEXT NOT NULL CHECK (tipo IN ('local','llevar')),
+  mesa_id INTEGER REFERENCES mesas(id) ON DELETE SET NULL,
+  cliente TEXT NOT NULL DEFAULT '',
+  estado TEXT NOT NULL DEFAULT 'abierta' CHECK (estado IN ('abierta','cerrada')),
+  creado_en TEXT NOT NULL,
+  cerrado_en TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_atenciones_mesa ON atenciones(fecha, estado, mesa_id);
+`);
+agregarColumna('comandas', 'atencion_id', 'INTEGER REFERENCES atenciones(id) ON DELETE SET NULL');
+db.exec('CREATE INDEX IF NOT EXISTS idx_comandas_atencion ON comandas(atencion_id)');
+
+// Comandas anteriores: las cobradas juntas forman una atención; las pendientes de una mesa, otra; el resto, una cada una
+{
+  const sueltas = db.prepare('SELECT * FROM comandas WHERE atencion_id IS NULL ORDER BY id').all();
+  if (sueltas.length)
+    tx(() => {
+      const grupos = new Map();
+      for (const c of sueltas) {
+        const pendiente = !c.pagada && c.estado !== 'cancelado';
+        const clave = c.cobro_id ? `cobro-${c.cobro_id}` : pendiente && c.tipo === 'local' ? `mesa-${c.fecha}-${c.mesa_id}` : `comanda-${c.id}`;
+        if (!grupos.has(clave)) grupos.set(clave, []);
+        grupos.get(clave).push(c);
+      }
+      const sig = db.prepare('SELECT COALESCE(MAX(numero_dia),0)+1 AS n FROM atenciones WHERE fecha = ?');
+      const ins = db.prepare(
+        'INSERT INTO atenciones (numero_dia, fecha, tipo, mesa_id, cliente, estado, creado_en, cerrado_en) VALUES (?,?,?,?,?,?,?,?)'
+      );
+      const upd = db.prepare('UPDATE comandas SET atencion_id = ? WHERE id = ?');
+      for (const cs of grupos.values()) {
+        const [c] = cs;
+        const abierta = cs.some((x) => !x.pagada && x.estado !== 'cancelado');
+        const id = ins.run(sig.get(c.fecha).n, c.fecha, c.tipo, c.mesa_id, c.cliente, abierta ? 'abierta' : 'cerrada', c.creado_en,
+          abierta ? null : cs.at(-1).actualizado_en).lastInsertRowid;
+        cs.forEach((x) => upd.run(id, x.id));
+      }
+    });
+}
+
 // ---------- ingreso con PIN ----------
 // password_hash queda sin uso (antes se ingresaba con contraseña).
 const PIN_INICIAL = '1234';
