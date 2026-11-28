@@ -545,3 +545,6 @@ main:has(.editor) { max-width: none; padding-bottom: 16px; }
 .link-comanda:focus-visible { outline: 2px solid var(--primario); outline-offset: 2px; }
 .fila-cobro:not(.on) { opacity: .55; }
 .pago-fila { padding: 10px; }
+
+/* Plato para llevar dentro de una comanda de mesa */
+.items li.item-llevar { border-left: 3px solid #f59e0b; padding-left: 6px; }
