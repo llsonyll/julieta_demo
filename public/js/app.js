@@ -2155,7 +2155,6 @@ async function vComprobantes(main) {
 }
 
 // ---------- Mesas ----------
-const EXCEDIDO_MIN = 120;
 const duracion = (m) => (m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`);
 const estadoMesa = (m) => (!m.ocupada ? 'libre' : m.por_entregar ? 'ocupada' : 'cobrar');
 // Posición en el plano: unidades donde el ancho del nivel mide 100 (alto del nivel = H)
@@ -2180,20 +2179,17 @@ async function vMesas(main) {
   const H = Math.max(60, ...[...delPiso, ...elementos].map((o) => o.y + o.alto)) + 6;
   const principales = delPiso.filter((m) => m.principal_id === m.id);
   const cuenta = (e) => principales.filter((m) => estadoMesa(m) === e).length;
-  const excedidas = activas
-    .filter((m) => m.principal_id === m.id && m.ocupada && minutosDesde(m.ocupada_desde) >= EXCEDIDO_MIN)
-    .sort((a, b) => a.ocupada_desde.localeCompare(b.ocupada_desde));
   const llevar = comandas.filter((c) => c.tipo === 'llevar');
 
   const htmlMesa = (m) => {
     const p = principal(m);
     const min = p.ocupada ? minutosDesde(p.ocupada_desde) : 0;
     const mostrarDatos = m.id === p.id && p.ocupada;
-    return `<button class="mesa-p ${estadoMesa(p)}${min >= EXCEDIDO_MIN ? ' excedida' : ''}${unir?.has(m.id) ? ' sel' : ''}"
+    return `<button class="mesa-p ${estadoMesa(p)}${unir?.has(m.id) ? ' sel' : ''}"
         data-m="${m.id}" style="${enPlano(m, H)}"
         title="Mesa ${esc(m.etiqueta)} · ${esc(m.piso)}">
       <b>${esc(m.numero)}</b>
-      ${mostrarDatos ? `<small>${dinero(p.por_cobrar)}</small><small class="t">${min >= EXCEDIDO_MIN ? '⚠ ' : ''}${duracion(min)}</small>` : ''}
+      ${mostrarDatos ? `<small>${dinero(p.por_cobrar)}</small><small class="t">${duracion(min)}</small>` : ''}
     </button>`;
   };
   // Contorno y nombre ("10-11") de cada grupo de mesas unidas
@@ -2243,18 +2239,12 @@ async function vMesas(main) {
               ${llevar.length ? `<div class="grid">${llevar.map(tarjetaComanda).join('')}</div>` : '<div class="vacio">No hay pedidos para llevar pendientes.</div>'}
             </div>`
           : `${barraModo}
-            <div class="salon-cuerpo">
-              <div class="plano-nivel${editar ? ' editando' : ''}${unir ? ' uniendo' : ''}" style="aspect-ratio:100/${H}">
-                ${elementos.map((e) => `<div class="elem ${e.tipo}" data-e="${e.id}" style="${enPlano(e, H)}"><span>${esc(e.nombre)}</span></div>`).join('')}
-                ${editar ? '' : htmlUniones()}
-                ${delPiso.map(htmlMesa).join('') || '<div class="vacio">No hay mesas en este nivel.</div>'}
-              </div>
-              <aside class="excedidas">
-                <h4>⚠ Tiempo excedido (${excedidas.length})</h4>
-                ${excedidas.map((m) => `<button class="tarjeta" data-m="${m.id}"><b>Mesa ${esc(m.etiqueta)}</b><small>${esc(m.piso)}</small><span class="t">${duracion(minutosDesde(m.ocupada_desde))}</span></button>`).join('') || `<div class="suave peq">Ninguna mesa pasa de ${EXCEDIDO_MIN} min.</div>`}
-              </aside>
+            <div class="plano-nivel${editar ? ' editando' : ''}${unir ? ' uniendo' : ''}" style="aspect-ratio:100/${H}">
+              ${elementos.map((e) => `<div class="elem ${e.tipo}" data-e="${e.id}" style="${enPlano(e, H)}"><span>${esc(e.nombre)}</span></div>`).join('')}
+              ${editar ? '' : htmlUniones()}
+              ${delPiso.map(htmlMesa).join('') || '<div class="vacio">No hay mesas en este nivel.</div>'}
             </div>
-            <div class="leyenda-salon">Leyenda: <span><i class="libre"></i>Libre</span><span><i class="ocupada"></i>Ocupada</span><span><i class="cobrar"></i>Por cobrar (todo entregado)</span><span><i class="excedida"></i>Tiempo excedido (+${EXCEDIDO_MIN} min)</span><span><i class="unidas"></i>Mesas unidas</span></div>`
+            <div class="leyenda-salon">Leyenda: <span><i class="libre"></i>Libre</span><span><i class="ocupada"></i>Ocupada</span><span><i class="cobrar"></i>Por cobrar (todo entregado)</span><span><i class="unidas"></i>Mesas unidas</span></div>`
       }
     </div>`;
 
