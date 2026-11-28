@@ -578,6 +578,13 @@ const ROLES_MENU = ['sopa', 'refresco', 'fijo', 'variable'];
 // sopa y refresco: uno por día, van incluidos en el menú (no se piden solos ni llevan guarnición)
 const UNICOS_DIA = ['sopa', 'refresco'];
 const precioMenu = () => Number(db.prepare("SELECT valor FROM ajustes WHERE clave = 'precio_menu'").get()?.valor) || 0;
+// envase por plato para llevar; S/ 1 hasta que se configure otro
+const precioEnvase = () => {
+  const v = db.prepare("SELECT valor FROM ajustes WHERE clave = 'precio_envase'").get()?.valor;
+  return v === undefined ? 1 : Number(v) || 0;
+};
+const guardarAjuste = (clave, valor) =>
+  db.prepare('INSERT INTO ajustes (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor').run(clave, String(valor));
 // Sopa / refresco del día. Sin sopa elegida no hay menú ese día; el refresco es opcional
 const unicoDelDia = (fecha, rol) =>
   db.prepare(`SELECT p.* FROM menu_dia m JOIN productos p ON p.id = m.producto_id
@@ -712,6 +719,7 @@ function cartaDelDia(fecha, completo) {
   return {
     fecha,
     precio_menu: precioMenu(),
+    precio_envase: precioEnvase(),
     sopa,
     refresco,
     sopas: productos.filter((p) => p.tipo === 'menu' && p.menu_rol === 'sopa' && (completo || p.en_carta)),
@@ -750,7 +758,24 @@ app.post(
 app.get(
   '/api/ajustes',
   rol('admin'),
-  ruta(() => ({ precio_menu: precioMenu() }))
+  ruta(() => ({ precio_menu: precioMenu(), precio_envase: precioEnvase() }))
+);
+
+// Configuración: { precio_menu?, precio_envase? }
+app.put(
+  '/api/ajustes',
+  rol('admin'),
+  ruta((req) => {
+    const precio = (k) => {
+      const n = Number(req.body[k]);
+      if (req.body[k] === '' || !Number.isFinite(n) || n < 0) fail(400, 'Precio inválido');
+      return redondear(n);
+    };
+    const cambios = ['precio_menu', 'precio_envase'].filter((k) => req.body[k] !== undefined).map((k) => [k, precio(k)]);
+    tx(() => cambios.forEach(([k, v]) => guardarAjuste(k, v)));
+    emitir('productos');
+    return { precio_menu: precioMenu(), precio_envase: precioEnvase() };
+  })
 );
 
 app.put(
@@ -905,13 +930,14 @@ app.get(
 app.get('/api/comandas/:id', ruta((req) => comandaVisible(req)));
 
 // Valida los ítems y toma nombres/precios del catálogo
-function prepararItems(itemsBody) {
+/** tipoComanda 'llevar': todos los platos van para llevar. Agrega al final una línea "Envase" por los platos que lo cobran. */
+function prepararItems(itemsBody, tipoComanda) {
   if (!Array.isArray(itemsBody) || !itemsBody.length) fail(400, 'Agregue al menos un plato');
   const getP = db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`);
   const getG = db.prepare('SELECT * FROM guarniciones WHERE id = ?');
   const sopa = unicoDelDia(hoy(), 'sopa');
   const refresco = unicoDelDia(hoy(), 'refresco');
-  return itemsBody.map((it) => {
+  const items = itemsBody.map((it) => {
     const p = getP.get(Number(it.producto_id));
     if (!p || !p.activo) fail(400, 'Uno de los platos ya no existe');
     const cantidad = Math.max(1, Math.min(99, parseInt(it.cantidad, 10) || 1));
@@ -954,8 +980,24 @@ function prepararItems(itemsBody) {
       guarnicion_defecto: p.guarnicion_base_id ? defecto : '',
       guarnicion_eleccion_id: eleccion.id,
       guarnicion_eleccion: eleccion.nombre,
+      ...llevarYEnvase(it, tipoComanda),
     };
   });
+  const envases = items.filter((it) => it.con_envase).reduce((s, it) => s + it.cantidad, 0);
+  const precio = precioEnvase();
+  if (envases && precio > 0)
+    items.push({
+      producto_id: null, nombre: 'Envase', tipo: 'envase', precio, cantidad: envases, nota: '', disponible: 1, sopa: '', refresco: '',
+      guarnicion_base_id: null, guarnicion_base: '', guarnicion_defecto: '', guarnicion_eleccion_id: null, guarnicion_eleccion: '',
+      para_llevar: 1, con_envase: 0,
+    });
+  return items;
+}
+
+// por defecto: en mesa; si va para llevar, con envase salvo que se quite
+function llevarYEnvase(it, tipoComanda) {
+  const para_llevar = tipoComanda === 'llevar' || bool(it.para_llevar) ? 1 : 0;
+  return { para_llevar, con_envase: para_llevar && (it.con_envase === undefined || bool(it.con_envase)) ? 1 : 0 };
 }
 
 function validarCabecera(b) {
@@ -973,13 +1015,14 @@ function guardarItems(comandaId, items) {
   db.prepare('DELETE FROM comanda_items WHERE comanda_id = ?').run(comandaId);
   const ins = db.prepare(
     `INSERT INTO comanda_items (comanda_id, producto_id, nombre, tipo, precio, cantidad, nota,
-       guarnicion_base_id, guarnicion_base, guarnicion_defecto, guarnicion_eleccion_id, guarnicion_eleccion, sopa, refresco)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       guarnicion_base_id, guarnicion_base, guarnicion_defecto, guarnicion_eleccion_id, guarnicion_eleccion, sopa, refresco, para_llevar, con_envase)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   let total = 0;
   for (const it of items) {
     ins.run(comandaId, it.producto_id, it.nombre, it.tipo, it.precio, it.cantidad, it.nota,
-      it.guarnicion_base_id, it.guarnicion_base, it.guarnicion_defecto, it.guarnicion_eleccion_id, it.guarnicion_eleccion, it.sopa, it.refresco);
+      it.guarnicion_base_id, it.guarnicion_base, it.guarnicion_defecto, it.guarnicion_eleccion_id, it.guarnicion_eleccion, it.sopa, it.refresco,
+      it.para_llevar, it.con_envase);
     total += it.precio * it.cantidad;
   }
   db.prepare('UPDATE comandas SET total = ?, actualizado_en = ? WHERE id = ?').run(redondear(total), ahora(), comandaId);
@@ -1072,7 +1115,7 @@ app.post(
   rol('admin', 'mozo', 'caja'),
   ruta((req) => {
     const cab = validarCabecera(req.body);
-    const items = prepararItems(req.body.items);
+    const items = prepararItems(req.body.items, cab.tipo);
     const agotado = items.find((i) => !i.disponible);
     if (agotado) fail(400, `"${agotado.nombre}" está agotado`);
     const mozoId = req.user.id;
@@ -1106,7 +1149,7 @@ app.put(
     const editable = c.estado === 'generado' || (req.user.roles.includes('admin') && !['entregado', 'cancelado'].includes(c.estado));
     if (!editable) fail(400, 'Solo se pueden editar comandas que aún no se enviaron a cocina');
     const cab = validarCabecera(req.body);
-    const items = prepararItems(req.body.items);
+    const items = prepararItems(req.body.items, cab.tipo);
     tx(() => {
       const actual = db.prepare('SELECT * FROM atenciones WHERE id = ?').get(c.atencion_id);
       const atencionId = elegirAtencion(cab, req.body, actual);
@@ -1765,7 +1808,7 @@ app.get(
     const productos = db
       .prepare(
         `SELECT i.nombre, i.tipo, SUM(i.cantidad) AS cantidad, SUM(i.cantidad * i.precio) AS total
-         FROM comanda_items i JOIN comandas c ON c.id = i.comanda_id WHERE ${validas}
+         FROM comanda_items i JOIN comandas c ON c.id = i.comanda_id WHERE ${validas} AND i.tipo <> 'envase'
          GROUP BY i.nombre, i.tipo ORDER BY cantidad DESC LIMIT 15`
       )
       .all(fecha);

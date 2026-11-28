@@ -115,13 +115,22 @@ function ticketCocina(c, momento) {
     b.push(centro('PARA LLEVAR', 18, true));
     if (c.cliente) b.push(centro(c.cliente, 13, true));
   }
+  // en mesa: los platos para llevar van aparte, para empacarlos (el envase no es para cocina)
+  const platos = c.items.filter((it) => it.tipo !== 'envase');
+  const llevar = c.tipo === 'local' ? platos.filter((it) => it.para_llevar) : [];
+  if (llevar.length) b.push(centro(`+ ${llevar.reduce((s, it) => s + it.cantidad, 0)} PARA LLEVAR`, 13, true));
   if (c.ticket_modificado) b.push(espacio(2), centro('*** COMANDA MODIFICADA ***', 11, true));
   b.push(centro(`${String(c.enviado_en || c.creado_en).slice(11, 16)} · ${c.mozo_nombre || ''}`, 10), linea());
-  for (const it of c.items) {
+  const plato = (it) => {
     b.push(texto(`${it.cantidad} x ${it.nombre}`, 14, { negrita: true, sep: 1 }));
     for (const g of lineasGuarnicion(it)) b.push(texto(g.txt, 12, { negrita: g.cambio, sep: 1, sangria: 18 }));
     if (it.nota) b.push(texto(`NOTA: ${it.nota}`, 12, { negrita: true, sep: 1, sangria: 18 }));
     b.push(espacio(5));
+  };
+  platos.filter((it) => !llevar.includes(it)).forEach(plato);
+  if (llevar.length) {
+    b.push(linea(), centro('*** PARA LLEVAR ***', 18, true), centro('empacar', 10), linea());
+    llevar.forEach(plato);
   }
   if (c.nota) b.push(linea(), texto(`NOTA: ${c.nota}`, 13, { negrita: true }));
   b.push(linea(), centro(`Impreso ${momento}`, 8));
