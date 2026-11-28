@@ -1582,7 +1582,6 @@ async function vEditorComanda(main, r, esRecarga) {
   let categoria = 'todos';
   let busqueda = '';
   const mesaSel = () => mesas.find((m) => m.id === b.mesa_id);
-  const vendible = (p) => (b.tipo === 'local' ? p.para_local : p.para_llevar);
 
   function tarjetaPlato(p) {
     const n = cantidadDe(p.id);
@@ -1597,7 +1596,7 @@ async function vEditorComanda(main, r, esRecarga) {
   }
 
   function pintarCarta() {
-    const deCarta = (pestana === 'menu' ? carta.menu : pestana === 'bebidas' ? (carta.bebidas || []) : carta.extras).filter(vendible);
+    const deCarta = (pestana === 'menu' ? carta.menu : pestana === 'bebidas' ? (carta.bebidas || []) : carta.extras);
     const cats = [...new Set(deCarta.map((p) => p.categoria || 'Otros'))];
     if (!cats.includes(categoria)) categoria = 'todos';
     const q = busqueda.toLowerCase();
@@ -1763,7 +1762,6 @@ async function vEditorComanda(main, r, esRecarga) {
       (el) =>
         (el.onclick = () => {
           b.tipo = el.dataset.tipo;
-          b.lineas = b.lineas.filter((l) => vendible(porId.get(l.producto_id)));
           render();
         })
     );

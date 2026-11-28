@@ -44,8 +44,6 @@ function cargarCarta(datos, { desactivarOtros = false } = {}) {
         p.tipo === 'menu' ? 'menu' : 'extra',
         baseId,
         p.con_eleccion ? 1 : 0,
-        p.para_local === false ? 0 : 1,
-        p.para_llevar === false ? 0 : 1,
         // ponytail: sin precio (null) = se guarda inactivo para que no se venda a S/ 0
         p.precio === null ? 0 : 1,
       ];
@@ -54,13 +52,13 @@ function cargarCarta(datos, { desactivarOtros = false } = {}) {
       if (existe) {
         db.prepare(
           `UPDATE productos SET nombre=?, descripcion=?, categoria=?, precio=?, tipo=?, guarnicion_base_id=?, con_eleccion=?,
-             para_local=?, para_llevar=?, activo=? WHERE id=?`
+             activo=? WHERE id=?`
         ).run(...valores, existe.id);
         r.platosActualizados++;
       } else {
         db.prepare(
-          `INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, guarnicion_base_id, con_eleccion, para_local, para_llevar, activo)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`
+          `INSERT INTO productos (nombre, descripcion, categoria, precio, tipo, guarnicion_base_id, con_eleccion, activo)
+           VALUES (?,?,?,?,?,?,?,?)`
         ).run(...valores);
         r.platosCreados++;
       }
