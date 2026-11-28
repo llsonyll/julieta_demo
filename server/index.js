@@ -306,7 +306,7 @@ app.put(
     if (!db.prepare('SELECT 1 FROM usuarios WHERE id = ?').get(id)) fail(404, 'Usuario no encontrado');
     const u = validarUsuario(req.body, false);
     if (existeUsuario(u.usuario, id)) fail(409, 'Ese nombre de usuario ya existe');
-    if (id === req.user.id && (u.rol !== 'admin' || !u.activo)) fail(400, 'No puede quitarse el rol de admin ni desactivarse a sí mismo');
+    if (id === req.user.id && ((u.rol !== 'admin' && !u.rolesExtra.includes('admin')) || !u.activo)) fail(400, 'No puede quitarse el rol de admin ni desactivarse a sí mismo');
     db.prepare('UPDATE usuarios SET nombre=?, usuario=?, rol=?, activo=? WHERE id=?').run(u.nombre, u.usuario, u.rol, u.activo, id);
     sincRoles(id, u.rol, u.rolesExtra);
     if (req.body.pin) {
@@ -846,8 +846,11 @@ function obtenerComanda(id, conHistorial = false) {
   return c;
 }
 
+// solo cocina (sin otro rol): no ve comandas que aún no se enviaron
+const soloCocina = (user) => user.roles.every((r) => r === 'cocina');
+
 function puedeVer(user, c) {
-  if (user.rol === 'cocina') return c.estado !== 'generado';
+  if (soloCocina(user)) return c.estado !== 'generado';
   return true; // admin, caja y cualquier mozo
 }
 
@@ -865,7 +868,7 @@ app.get(
     const fecha = esFecha(req.query.fecha) ? req.query.fecha : hoy();
     const where = ['c.fecha = ?'];
     const params = [fecha];
-    const vista = req.user.rol === 'cocina' ? 'cocina' : req.query.vista;
+    const vista = soloCocina(req.user) ? 'cocina' : req.query.vista;
     if (vista === 'cocina') where.push(SQL_EN_COCINA);
     else if (vista === 'activas') where.push("c.estado NOT IN ('entregado','cancelado')");
     else if (vista === 'por_cobrar') where.push("c.estado <> 'cancelado' AND c.pagada = 0");
@@ -1155,7 +1158,7 @@ app.get(
   '/api/tickets.pdf',
   ruta(async (req, res) => {
     const ids = listaIds(req.query.ids);
-    const comandas = obtenerComandas(ids).filter((c) => c.estado !== 'generado' || req.user.rol !== 'cocina');
+    const comandas = obtenerComandas(ids).filter((c) => c.estado !== 'generado' || !soloCocina(req.user));
     if (!comandas.length) fail(404, 'No hay tickets para imprimir');
     const pdf = await generarPDF(comandas.map((c) => ticketCocina(c, momento())), 'Tickets de cocina');
     res.setHeader('Content-Type', 'application/pdf');

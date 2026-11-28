@@ -142,7 +142,9 @@ function comprobante({ cobro, comandas, config, cajero, ahora }) {
 
   const primera = comandas[0];
   b.push(texto(primera.tipo === 'local' ? `Mesa: ${primera.mesa_numero}${primera.mesa_piso ? ` (${primera.mesa_piso})` : ''}` : `Para llevar${primera.cliente ? `: ${primera.cliente}` : ''}`, 10, { negrita: true }));
-  b.push(texto(`Comanda${comandas.length > 1 ? 's' : ''}: ${comandas.map((c) => `#${c.numero_dia}`).join(', ')}`, 9));
+  const atenciones = [...new Set(comandas.map((c) => c.atencion_numero).filter(Boolean))];
+  if (atenciones.length) b.push(texto(`Atención${atenciones.length > 1 ? 'es' : ''}: ${atenciones.map((n) => `#${n}`).join(', ')}`, 10, { negrita: true }));
+  b.push(texto(`Comanda${comandas.length > 1 ? 's' : ''}:${comandas.map((c) => `#${c.numero_dia}`).join(', ')}`, 9));
   b.push(linea(), fila('Cant. Descripción', 'Importe', 9, true), espacio(2));
 
   // agrupa líneas iguales de todas las comandas
