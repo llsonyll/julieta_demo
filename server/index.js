@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const express = require('express');
+const QRCode = require('qrcode');
 const { db, tx, hoy, ahora, hashPassword, verificarPassword, esPin, sembrar, respaldar } = require('./db');
 const { generarPDF, ticketCocina, comprobante, comprobanteSunat } = require('./pdf');
 const sunat = require('./sunat');
@@ -159,8 +160,40 @@ app.post(
   })
 );
 
+// ---------------- dirección para entrar desde los celulares ----------------
+// Adaptadores que no son la red del local (Windows crea varios virtuales)
+const ADAPTADOR_VIRTUAL = /vethernet|wsl|hyper-v|virtualbox|vbox|vmware|docker|bluetooth|tailscale|zerotier|hamachi|vpn|loopback/i;
+const ADAPTADOR_LOCAL = /wi-?fi|wlan|wireless|ethernet|^eth|^en\d|^wl/i;
+const esPrivada = (ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
+
+/** Direcciones IPv4 de esta PC en la red, primero las del WiFi o cable de red del local */
+function direccionesRed() {
+  const lista = [];
+  for (const [interfaz, ifs] of Object.entries(os.networkInterfaces()))
+    for (const i of ifs || [])
+      if ((i.family === 'IPv4' || i.family === 4) && !i.internal && !i.address.startsWith('169.254.'))
+        lista.push({ ip: i.address, interfaz, url: `http://${i.address}:${PUERTO}`, virtual: ADAPTADOR_VIRTUAL.test(interfaz) });
+  const puntaje = (d) => (d.virtual ? 0 : 4) + (esPrivada(d.ip) ? 2 : 0) + (ADAPTADOR_LOCAL.test(d.interfaz) ? 1 : 0);
+  lista.sort((a, b) => puntaje(b) - puntaje(a));
+  const reales = lista.filter((d) => !d.virtual);
+  return (reales.length ? reales : lista).map(({ ip, interfaz, url }) => ({ ip, interfaz, url }));
+}
+
+// QR con la dirección (solo de las direcciones de esta PC)
+app.get(
+  '/api/red/qr.svg',
+  ruta(async (req, res) => {
+    const d = direccionesRed().find((x) => x.url === req.query.u) || direccionesRed()[0];
+    if (!d) fail(404, 'Esta PC no está conectada a ninguna red');
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(await QRCode.toString(d.url, { type: 'svg', margin: 2, errorCorrectionLevel: 'M' }));
+  })
+);
+
 app.get('/api/config', (req, res) =>
   res.json({
+    direcciones: direccionesRed(),
     nombreRestaurante: CONFIG.nombreRestaurante,
     direccion: CONFIG.direccion,
     moneda: CONFIG.moneda,
@@ -708,6 +741,12 @@ app.post(
     emitir('productos');
     return { ok: true };
   })
+);
+
+app.get(
+  '/api/ajustes',
+  rol('admin'),
+  ruta(() => ({ precio_menu: precioMenu() }))
 );
 
 app.put(
@@ -1655,10 +1694,6 @@ setInterval(() => {
 app.listen(PUERTO, '0.0.0.0', () => {
   console.log(`\n=== ${CONFIG.nombreRestaurante} - Sistema de comandas ===`);
   console.log(`En esta PC:      http://localhost:${PUERTO}`);
-  for (const lista of Object.values(os.networkInterfaces())) {
-    for (const i of lista || []) {
-      if (i.family === 'IPv4' && !i.internal) console.log(`Desde celulares: http://${i.address}:${PUERTO}`);
-    }
-  }
+  for (const d of direccionesRed()) console.log(`Desde celulares: ${d.url}   (${d.interfaz})`);
   console.log('');
 });
