@@ -728,41 +728,82 @@ function porAtencion(comandas) {
   return [...g.values()];
 }
 
-/** Cobrar una atención: con una sola comanda pendiente va directo; si hay varias, se eligen cuáles (dividir la cuenta) */
+/** Copia de las comandas con solo lo que falta cobrar de cada plato (item.cantidad = pendiente) */
+function pendientes(comandas) {
+  return comandas
+    .filter(pendiente)
+    .map((c) => {
+      const items = c.items.map((it) => ({ ...it, cantidad: it.cantidad - (it.cobrado || 0) })).filter((it) => it.cantidad > 0);
+      return { ...c, items, total: items.reduce((s, it) => s + it.precio * it.cantidad, 0) };
+    })
+    .filter((c) => c.items.length);
+}
+const porCobrarDe = (c) => c.total - (c.cobrado || 0);
+
+/** Cobrar una atención: se eligen los platos (y cuántos de cada uno) que paga este cliente; por defecto, todo */
 async function cobrarAtencion(atencionId) {
-  const cs = (await api('GET', '/api/comandas?vista=por_cobrar')).filter((c) => c.atencion_id === atencionId);
+  const cs = pendientes((await api('GET', '/api/comandas?vista=por_cobrar')).filter((c) => c.atencion_id === atencionId));
   if (!cs.length) return toast('Esta atención no tiene nada por cobrar', 'error');
   const titulo = `Cobrar atención #${cs[0].atencion_numero} · ${cs[0].tipo === 'local' ? `Mesa ${cs[0].mesa_numero}` : 'Para llevar'}`;
-  if (cs.length === 1) return abrirCobro(cs, titulo);
-  // ponytail: se divide por comanda; dividir platos de una misma comanda queda para cuando se necesite
+  const items = cs.flatMap((c) => c.items);
+  if (items.length === 1 && items[0].cantidad === 1) return abrirCobro(cs, titulo);
+  const sel = new Map(items.map((it) => [it.id, it.cantidad])); // item_id -> unidades a cobrar
   const m = abrirModal(`
     <div class="pila">
       <div class="fila entre"><h3>${esc(titulo)}</h3><button class="btn chico" data-x>✕</button></div>
-      <div class="suave peq">Desmarque las comandas que se pagan aparte (cuenta dividida).</div>
+      <div class="suave peq">Elija lo que paga este cliente. Lo demás queda pendiente en la atención.</div>
+      <div class="fila"><button type="button" class="btn chico" data-todo="1">Todo</button><button type="button" class="btn chico" data-todo="0">Nada</button></div>
       ${cs
         .map(
-          (c) => `<label class="toggle-fila on"><input type="checkbox" data-sel="${c.id}" checked>
-            <div class="crecer"><b>#${c.numero_dia}</b> <span class="suave peq">${esc(c.mozo_nombre || '')} · ${hora(c.creado_en)}</span>
-              <div class="suave peq">${c.items.map((i) => `${i.cantidad}× ${esc(i.nombre)}`).join(', ')}</div></div>
-            <b>${dinero(c.total)}</b></label>`
+          (c) => `<div class="pila-chica">
+            <button type="button" class="link-comanda" data-comanda="${c.id}"><b>Comanda #${c.numero_dia}</b> <span class="suave peq">${esc(c.mozo_nombre || '')} · ${hora(c.creado_en)} · todo / nada</span></button>
+            ${c.items
+              .map((it) => {
+                const g = detalleGuarnicion(it);
+                return `<div class="toggle-fila on fila-cobro">
+                  <div class="crecer"><div>${esc(it.nombre)} <span class="suave peq">${dinero(it.precio)}</span></div>${g ? `<div class="guar">${g}</div>` : ''}</div>
+                  <div class="contador-cant"><button type="button" data-menos="${it.id}">−</button><span class="v" data-n="${it.id}"></span><button type="button" class="mas" data-mas-cobro="${it.id}">＋</button></div>
+                </div>`;
+              })
+              .join('')}
+          </div>`
         )
         .join('')}
       <button class="btn acento bloque" id="seguir"></button>
     </div>`);
   $('[data-x]', m).onclick = cerrarModal;
-  const elegidas = () => cs.filter((c) => $(`[data-sel="${c.id}"]`, m).checked);
+  const maxDe = new Map(items.map((it) => [it.id, it.cantidad]));
+  const elegido = () => cs.map((c) => ({ ...c, items: c.items.map((it) => ({ ...it, cantidad: sel.get(it.id) })).filter((it) => it.cantidad) })).filter((c) => c.items.length);
   const pintar = () => {
-    const e = elegidas();
+    for (const [id, n] of sel) {
+      $(`[data-n="${id}"]`, m).textContent = `${n}/${maxDe.get(id)}`;
+      $(`[data-n="${id}"]`, m).closest('.fila-cobro').classList.toggle('on', n > 0);
+    }
+    const e = elegido();
+    const total = e.reduce((s, c) => s + c.items.reduce((t, it) => t + it.precio * it.cantidad, 0), 0);
+    const todo = [...sel].every(([id, n]) => n === maxDe.get(id));
     const b = $('#seguir', m);
     b.disabled = !e.length;
-    b.textContent = e.length === cs.length ? `💵 Cobrar todo (${dinero(e.reduce((s, c) => s + c.total, 0))})` : `💵 Cobrar ${e.length} de ${cs.length} (${dinero(e.reduce((s, c) => s + c.total, 0))})`;
+    b.textContent = e.length ? `💵 Cobrar ${todo ? 'todo' : 'lo elegido'} (${dinero(total)})` : 'Elija al menos un plato';
   };
-  $$('[data-sel]', m).forEach((x) => (x.onchange = pintar));
+  const poner = (ids, f) => (ids.forEach((id) => sel.set(id, f(id))), pintar());
+  $$('[data-menos]', m).forEach((x) => (x.onclick = () => poner([Number(x.dataset.menos)], (id) => Math.max(0, sel.get(id) - 1))));
+  $$('[data-mas-cobro]', m).forEach((x) => (x.onclick = () => poner([Number(x.dataset.masCobro)], (id) => Math.min(maxDe.get(id), sel.get(id) + 1))));
+  $$('[data-todo]', m).forEach((x) => (x.onclick = () => poner([...sel.keys()], (id) => (x.dataset.todo === '1' ? maxDe.get(id) : 0))));
+  $$('[data-comanda]', m).forEach(
+    (x) =>
+      (x.onclick = () => {
+        const ids = cs.find((c) => c.id === Number(x.dataset.comanda)).items.map((it) => it.id);
+        const lleno = ids.every((id) => sel.get(id) === maxDe.get(id));
+        poner(ids, (id) => (lleno ? 0 : maxDe.get(id)));
+      })
+  );
   pintar();
   $('#seguir', m).onclick = () => {
-    const e = elegidas();
+    const e = elegido();
+    const todo = [...sel].every(([id, n]) => n === maxDe.get(id));
     cerrarModal();
-    abrirCobro(e, e.length === cs.length ? titulo : `${titulo} (parte)`);
+    abrirCobro(e, todo ? titulo : `${titulo} (parte)`);
   };
 }
 
@@ -798,10 +839,16 @@ async function moverAtencion(atencionId, mesaActual) {
   };
 }
 
+/** comandas: solo con los platos y cantidades que se cobran (ver pendientes()) */
 function abrirCobro(comandas, titulo) {
-  const total = comandas.reduce((s, c) => s + c.total, 0);
+  const total = Math.round(comandas.reduce((s, c) => s + c.items.reduce((t, it) => t + it.precio * it.cantidad, 0), 0) * 100) / 100;
   const metodos = S.config.metodosPago || ['Efectivo'];
-  let metodo = metodos[0];
+  // la primera forma de pago se lleva lo que falte; las demás tienen su monto (pago mixto)
+  const pagos = [{ metodo: metodos[0], monto: total }];
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const balancear = () => (pagos[0].monto = r2(total - pagos.slice(1).reduce((s, p) => s + (Number(p.monto) || 0), 0)));
+  const efectivo = () => pagos.filter((p) => p.metodo === 'Efectivo').reduce((s, p) => s + p.monto, 0);
+  const pagosValidos = () => pagos.every((p) => p.monto > 0);
   let tipoComprobante = 'nota';
   let xml = null; // { base64, vista } del comprobante emitido en SOL
   const m = abrirModal(`
@@ -826,10 +873,9 @@ function abrirCobro(comandas, titulo) {
         </label>
         <div id="vista-xml" class="oculto"></div>
       </div>
-      <div><div class="etiqueta-campo">Forma de pago</div>
-        <div class="opciones">${metodos.map((x) => `<button type="button" class="chip ${x === metodo ? 'activo' : ''}" data-metodo="${esc(x)}">${esc(x)}</button>`).join('')}</div></div>
-      <label class="campo" id="campo-recibido"><span>Recibido (opcional, para calcular el vuelto)</span>
-        <input type="number" inputmode="decimal" step="0.1" min="0" id="recibido" placeholder="${Number(total).toFixed(2)}"></label>
+      <div><div class="etiqueta-campo">Forma de pago</div><div id="pagos" class="pila"></div></div>
+      <label class="campo" id="campo-recibido"><span>Recibido en efectivo (opcional, para calcular el vuelto)</span>
+        <input type="number" inputmode="decimal" step="0.1" min="0" id="recibido"></label>
       <div class="suave" id="vuelto"></div>
       <div class="error" data-err></div>
       <button class="btn acento bloque" id="cobrar">💵 Cobrar e imprimir nota de venta</button>
@@ -917,32 +963,70 @@ function abrirCobro(comandas, titulo) {
   };
 
   const recibido = $('#recibido', m);
-  recibido.oninput = () => {
+  const pintarVuelto = () => {
+    const ef = efectivo();
     const r = Number(recibido.value);
-    $('#vuelto', m).textContent = recibido.value && r >= total ? `Vuelto: ${dinero(r - total)}` : '';
+    $('#campo-recibido', m).classList.toggle('oculto', !ef);
+    $('#vuelto', m).classList.toggle('oculto', !ef);
+    recibido.placeholder = ef.toFixed(2);
+    $('#vuelto', m).textContent = ef && recibido.value && r >= ef ? `Vuelto: ${dinero(r - ef)}` : '';
   };
-  $$('[data-metodo]', m).forEach(
-    (b) =>
-      (b.onclick = () => {
-        metodo = b.dataset.metodo;
-        $$('[data-metodo]', m).forEach((x) => x.classList.toggle('activo', x === b));
-        $('#campo-recibido', m).classList.toggle('oculto', metodo !== 'Efectivo');
-        $('#vuelto', m).classList.toggle('oculto', metodo !== 'Efectivo');
-      })
-  );
+  recibido.oninput = pintarVuelto;
+  // Una forma de pago: chips. Pago mixto: una fila por forma, la primera se ajusta sola al resto
+  function pintarPagos() {
+    balancear();
+    const caja = $('#pagos', m);
+    const chipsDe = (i) =>
+      metodos.map((x) => `<button type="button" class="chip ${x === pagos[i].metodo ? 'activo' : ''}" data-pago="${i}" data-metodo="${esc(x)}">${esc(x)}</button>`).join('');
+    caja.innerHTML =
+      pagos.length === 1
+        ? `<div class="opciones">${chipsDe(0)}</div>
+           <button type="button" class="btn chico" id="mixto">➕ Pagar con dos formas (mixto)</button>`
+        : `${pagos
+            .map(
+              (p, i) => `<div class="tarjeta pila-chica pago-fila">
+                <div class="fila entre"><b>${i === 0 ? 'Resto' : `Pago ${i + 1}`}</b>
+                  ${i === 0 ? `<b class="${p.monto > 0 ? '' : 'falta'}">${dinero(p.monto)}</b>`
+                    : `<span class="fila"><input class="entrada" type="number" inputmode="decimal" step="0.1" min="0" data-monto="${i}" value="${p.monto || ''}" placeholder="Monto" style="width:110px">
+                       <button type="button" class="btn chico" data-quitar-pago="${i}" aria-label="Quitar">✕</button></span>`}</div>
+                <div class="opciones">${chipsDe(i)}</div></div>`
+            )
+            .join('')}
+           ${pagos[0].monto > 0 ? '' : '<div class="error">Los pagos superan el total</div>'}
+           <button type="button" class="btn chico" id="mixto">➕ Otra forma de pago</button>`;
+    $$('[data-metodo]', caja).forEach((b) => (b.onclick = () => ((pagos[b.dataset.pago].metodo = b.dataset.metodo), pintarPagos())));
+    $$('[data-monto]', caja).forEach(
+      (x) =>
+        (x.onchange = () => {
+          pagos[x.dataset.monto].monto = r2(Number(x.value) || 0);
+          pintarPagos();
+        })
+    );
+    $$('[data-quitar-pago]', caja).forEach((b) => (b.onclick = () => (pagos.splice(Number(b.dataset.quitarPago), 1), pintarPagos())));
+    $('#mixto', caja).onclick = () => {
+      pagos.push({ metodo: metodos.find((x) => !pagos.some((p) => p.metodo === x)) || metodos[0], monto: 0 });
+      pintarPagos();
+      $(`[data-monto="${pagos.length - 1}"]`, caja)?.focus();
+    };
+    pintarVuelto();
+    $('#cobrar', m).disabled = !pagosValidos();
+  }
+  pintarPagos();
 
   $('#cobrar', m).onclick = async (e) => {
     const sunat = tipoComprobante === 'sunat';
     if (sunat && xml?.vista.coincide === false && !(await confirmarEnCobro())) return;
+    if (!pagosValidos()) return ($('[data-err]', m).textContent = 'Revise los montos de cada forma de pago');
+    const metodo = pagos.length > 1 ? 'Mixto' : pagos[0].metodo;
     e.target.disabled = true;
     const imprime = !sunat || xml; // sin XML no se imprime nada todavía
     const ventana = imprime && !usaTicketeraCaja() ? prepararVentana() : null;
     try {
       const cobro = await api('POST', '/api/cobros', {
-        comanda_ids: comandas.map((c) => c.id),
+        items: comandas.flatMap((c) => c.items.map((it) => ({ item_id: it.id, cantidad: it.cantidad }))),
+        pagos: pagos.map((p) => ({ metodo: p.metodo, monto: p.monto })),
         comprobante: tipoComprobante,
-        metodo,
-        recibido: metodo === 'Efectivo' && recibido.value !== '' ? Number(recibido.value) : null,
+        recibido: efectivo() && recibido.value !== '' ? Number(recibido.value) : null,
         ...(sunat && xml ? { sunat_xml: xml.base64, aceptar_diferencia: xml.vista.coincide === false } : {}),
       });
       cerrarModal();
@@ -1069,7 +1153,7 @@ const ACCIONES = {
     try {
       const c = await api('GET', `/api/comandas/${el.dataset.id}`);
       if (c.atencion_id) return cobrarAtencion(c.atencion_id);
-      abrirCobro([c], `Cobrar comanda #${c.numero_dia}`);
+      abrirCobro(pendientes([c]), `Cobrar comanda #${c.numero_dia}`);
     } catch (e) {
       toast(e.message, 'error');
     }
@@ -1082,7 +1166,7 @@ const ACCIONES = {
   'ir-comprobantes': () => ir('#/comprobantes'),
   'comprobante-pdf': (el) => imprimirPDF(`/api/cobros/${el.dataset.cobro}/comprobante.pdf`),
   'anular-cobro': async (el) => {
-    if (!(await confirmar('¿Anular este cobro? Las comandas quedarán como no pagadas.', { ok: 'Anular cobro', peligro: true }))) return;
+    if (!(await confirmar('¿Anular este cobro? Sus platos vuelven a quedar por cobrar.', { ok: 'Anular cobro', peligro: true }))) return;
     try {
       await api('POST', `/api/cobros/${el.dataset.cobro}/anular`);
       toast('Cobro anulado', 'ok');
@@ -1166,7 +1250,7 @@ function botonesComanda(c) {
   const btn = (estado, texto, clase = '') =>
     `<button class="btn chico ${clase}" data-accion="estado" data-id="${c.id}" data-estado="${estado}">${texto}</button>`;
   if (c.estado === 'generado' && puede('admin', 'mozo', 'caja')) {
-    b.push(`<button class="btn chico" data-accion="editar-comanda" data-id="${c.id}">✏️ Editar</button>`);
+    if (!c.cobrado) b.push(`<button class="btn chico" data-accion="editar-comanda" data-id="${c.id}">✏️ Editar</button>`);
     b.push(btn('enviado_cocina', '🍳 Enviar a cocina', 'primario'));
   }
   if (EN_COCINA.includes(c.estado) && puede('admin', 'mozo', 'caja')) b.push(btn('entregado', '🍽️ Entregado', 'ok'));
@@ -1175,6 +1259,13 @@ function botonesComanda(c) {
   return b.join('');
 }
 
+const etiquetaPago = (c) =>
+  c.pagada
+    ? `<span class="etiqueta pagada">PAGADA${c.metodo_pago ? ` · ${esc(c.metodo_pago.replaceAll(',', ' + ').toUpperCase())}` : ''}</span>`
+    : c.cobrado > 0
+      ? `<span class="etiqueta llevar">PAGO PARCIAL · FALTA ${dinero(porCobrarDe(c))}</span>`
+      : '';
+
 function tarjetaComanda(c) {
   const pendienteTicket = EN_COCINA.includes(c.estado) && !c.ticket_impreso;
   return `
@@ -1182,7 +1273,7 @@ function tarjetaComanda(c) {
       <div class="fila entre"><span class="num">#${c.numero_dia}</span>${badge(c.estado)}</div>
       <div class="fila envolver" style="margin-top:4px">${lugar(c)} ${etiquetaAtencion(c)}
         <span class="suave peq">· ${esc(c.mozo_nombre || '')} · ${hora(c.creado_en)}</span>
-        ${c.pagada ? `<span class="etiqueta pagada">PAGADA${c.metodo_pago ? ` · ${esc(c.metodo_pago.toUpperCase())}` : ''}</span>` : ''}
+        ${etiquetaPago(c)}
         ${pendienteTicket ? '<span class="etiqueta llevar">🖨️ TICKET PENDIENTE</span>' : ''}</div>
       <ul class="items">${c.items.map(lineaItem).join('')}</ul>
       ${c.nota ? `<div class="nota">📝 ${esc(c.nota)}</div>` : ''}
@@ -1232,7 +1323,7 @@ async function vComandas(main) {
 function bloqueAtencion(cs, { mesa = false } = {}) {
   // totales de la atención completa (la vista puede mostrar solo parte de sus comandas)
   const [c] = cs;
-  const porCobrar = c.atencion_id ? c.atencion_por_cobrar : cs.filter(pendiente).reduce((s, x) => s + x.total, 0);
+  const porCobrar = c.atencion_id ? c.atencion_por_cobrar : cs.filter(pendiente).reduce((s, x) => s + porCobrarDe(x), 0);
   const n = c.atencion_comandas ?? cs.length;
   const acciones = [];
   if (porCobrar > 0 && c.atencion_id) {
@@ -1262,26 +1353,36 @@ async function vComandaDetalle(main, r) {
   if (EN_COCINA.includes(c.estado) || c.estado === 'entregado')
     if (puede('admin', 'caja', 'cocina'))
       acciones.push(`<button class="btn chico" data-accion="imprimir-ticket" data-ids="${c.id}">🖨️ ${c.ticket_impreso ? 'Reimprimir' : 'Imprimir'} ticket</button>`);
-  if (c.pagada && c.cobro_comprobante === 'sunat' && puede('admin', 'caja'))
-    acciones.push(
-      c.sunat_id
-        ? `<button class="btn chico primario" data-accion="imprimir-sunat" data-id="${c.sunat_id}">🏛️ ${esc(c.sunat_numero)}</button>`
-        : `<button class="btn chico acento" data-accion="ir-comprobantes">🏛️ Falta subir el XML de SUNAT</button>`
-    );
-  if (c.pagada && c.cobro_id && puede('admin', 'caja')) {
-    acciones.push(`<button class="btn chico" data-accion="comprobante" data-cobro="${c.cobro_id}">🧾 Nota de venta</button>`);
-    if (usaTicketeraCaja()) acciones.push(`<button class="btn chico" data-accion="comprobante-pdf" data-cobro="${c.cobro_id}">PDF</button>`);
-    acciones.push(`<button class="btn chico" data-accion="anular-cobro" data-cobro="${c.cobro_id}">Anular cobro</button>`);
-  }
+  // Cobros de la comanda (con cuenta dividida puede haber varios): comprobante y anular cada uno
+  const cobros =
+    c.cobros?.length && puede('admin', 'caja')
+      ? `<div class="tarjeta pila"><h3>Cobros</h3>${c.cobros
+          .map((co) => {
+            const sunat =
+              co.comprobante !== 'sunat'
+                ? ''
+                : co.sunat_id
+                  ? `<button class="btn chico primario" data-accion="imprimir-sunat" data-id="${co.sunat_id}">🏛️ ${esc(co.sunat_numero)}</button>`
+                  : '<button class="btn chico acento" data-accion="ir-comprobantes">🏛️ Falta subir el XML de SUNAT</button>';
+            return `<div class="fila entre envolver">
+              <span><b>N° ${String(co.id).padStart(6, '0')}</b> · ${dinero(co.total)} · ${esc(co.metodo)} <span class="suave peq">· ${hora(co.creado_en)}</span></span>
+              <span class="fila envolver">${sunat}
+                <button class="btn chico" data-accion="comprobante" data-cobro="${co.id}">🧾 Nota de venta</button>
+                ${usaTicketeraCaja() ? `<button class="btn chico" data-accion="comprobante-pdf" data-cobro="${co.id}">PDF</button>` : ''}
+                <button class="btn chico" data-accion="anular-cobro" data-cobro="${co.id}">Anular</button></span>
+            </div>`;
+          })
+          .join('')}</div>`
+      : '';
   const puedeCancelar =
-    !c.pagada &&
+    !c.cobrado &&
     ((c.estado === 'generado' && puede('mozo', 'caja', 'admin')) ||
       (EN_COCINA.includes(c.estado) && puede('caja', 'admin')));
   if (puedeCancelar)
     acciones.push(`<button class="btn chico peligro" data-accion="estado" data-id="${c.id}" data-estado="cancelado">Cancelar comanda</button>`);
-  if (puede('admin') && EN_COCINA.includes(c.estado) && !c.pagada)
+  if (puede('admin') && EN_COCINA.includes(c.estado) && !c.cobrado)
     acciones.push(`<button class="btn chico" data-accion="editar-comanda" data-id="${c.id}">✏️ Editar (admin)</button>`);
-  if (puede('admin')) acciones.push(`<button class="btn chico peligro" data-accion="eliminar-comanda" data-id="${c.id}">🗑 Eliminar</button>`);
+  if (puede('admin') && !c.cobrado) acciones.push(`<button class="btn chico peligro" data-accion="eliminar-comanda" data-id="${c.id}">🗑 Eliminar</button>`);
 
   main.innerHTML = `
     <div class="pila">
@@ -1289,14 +1390,15 @@ async function vComandaDetalle(main, r) {
       <div class="tarjeta comanda ${claseEstado(c.estado)}" style="cursor:default">
         <div class="fila entre"><span class="num">Comanda #${c.numero_dia}</span>${badge(c.estado)}</div>
         <div class="fila envolver" style="margin-top:6px">${lugar(c)} ${etiquetaAtencion(c)}
-          ${c.pagada ? `<span class="etiqueta pagada">PAGADA${c.metodo_pago ? ` · ${esc(c.metodo_pago.toUpperCase())}` : ''}</span>` : ''}</div>
+          ${etiquetaPago(c)}</div>
         <div class="suave peq">Mozo: ${esc(c.mozo_nombre || '-')} · Creada ${hora(c.creado_en)} · ${esc(c.fecha)}</div>
         <div class="tabla-wrap" style="margin-top:10px"><table>
           <thead><tr><th>Cant.</th><th>Plato</th><th class="num">P. unit</th><th class="num">Subtotal</th></tr></thead>
           <tbody>${c.items
             .map((i) => {
               const g = detalleGuarnicion(i);
-              return `<tr><td><b>${i.cantidad}</b></td><td>${esc(i.nombre)}${i.tipo === 'menu' ? ' <span class="etiqueta">MENÚ</span>' : ''}
+              const parcial = i.cobrado > 0 && i.cobrado < i.cantidad ? ` <span class="etiqueta llevar">${i.cobrado}/${i.cantidad} COBRADO</span>` : '';
+              return `<tr><td><b>${i.cantidad}</b></td><td>${esc(i.nombre)}${i.tipo === 'menu' ? ' <span class="etiqueta">MENÚ</span>' : ''}${parcial}
                 ${g ? `<div class="guar">${g}</div>` : ''}${i.nota ? `<div class="nota">${esc(i.nota)}</div>` : ''}</td>
                 <td class="num">${dinero(i.precio)}</td><td class="num">${dinero(i.precio * i.cantidad)}</td></tr>`;
             })
@@ -1306,6 +1408,7 @@ async function vComandaDetalle(main, r) {
         ${c.nota ? `<div class="nota" style="margin-top:8px">📝 ${esc(c.nota)}</div>` : ''}
         <div class="acciones">${acciones.join('')}</div>
       </div>
+      ${cobros}
       <div class="tarjeta">
         <h3>Seguimiento</h3>
         <ul class="timeline">${c.historial
@@ -1587,7 +1690,7 @@ async function vEditorComanda(main, r, esRecarga) {
       ${as
         .map((cs) => {
           const c = cs[0];
-          const t = `Atención #${c.atencion_numero} · ${cs.length} comanda(s) · ${dinero(cs.reduce((s, x) => s + x.total, 0))}${c.mozo_nombre ? ` · ${esc(c.mozo_nombre)}` : ''}`;
+          const t = `Atención #${c.atencion_numero} · ${cs.length} comanda(s) · ${dinero(cs.reduce((s, x) => s + porCobrarDe(x), 0))}${c.mozo_nombre ? ` · ${esc(c.mozo_nombre)}` : ''}`;
           return opt(c.atencion_id, t);
         })
         .join('')}
@@ -2200,7 +2303,7 @@ async function vMesas(main) {
         const cs = comandas.filter((c) => c.mesa_id === p.id);
         const separar = grupo.length > 1 ? `<button class="btn bloque" id="separar">✂️ Separar mesas ${esc(p.etiqueta)}</button>` : '';
         if (!cs.length && !separar) return ir(`#/nueva?mesa=${p.id}`);
-        const total = cs.reduce((s, c) => s + c.total, 0);
+        const total = cs.reduce((s, c) => s + porCobrarDe(c), 0);
         const atenciones = porAtencion(cs);
         // varias atenciones en la mesa (mesa compartida): también se puede cobrar todo junto
         const varias = atenciones.length > 1;
@@ -2218,7 +2321,7 @@ async function vMesas(main) {
           </div>`);
         $('[data-x]', modal).onclick = cerrarModal;
         const cm = $('#cobrar-mesa', modal);
-        if (cm) cm.onclick = () => abrirCobro(cs, `Cobrar mesa ${p.etiqueta}`);
+        if (cm) cm.onclick = () => abrirCobro(pendientes(cs), `Cobrar mesa ${p.etiqueta}`);
         const pc = $('#precuenta-mesa', modal);
         if (pc) pc.onclick = () => precuentaDe(cs.map((c) => c.id));
         const sp = $('#separar', modal);

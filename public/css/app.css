@@ -548,3 +548,10 @@ main:has(.editor) { max-width: none; padding-bottom: 16px; }
 .atencion-cab { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .etiqueta.at { background: #e0e7ff; color: #3730a3; }
 .atencion .etiqueta.at { display: none; } /* dentro del bloque ya se sabe la atención */
+
+/* Cobro por plato y pago mixto */
+.pila-chica { display: flex; flex-direction: column; gap: 6px; }
+.link-comanda { all: unset; cursor: pointer; padding: 4px 0; }
+.link-comanda:focus-visible { outline: 2px solid var(--primario); outline-offset: 2px; }
+.fila-cobro:not(.on) { opacity: .55; }
+.pago-fila { padding: 10px; }

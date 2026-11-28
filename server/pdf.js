@@ -164,9 +164,15 @@ function comprobante({ cobro, comandas, config, cajero, ahora }) {
   const total = cobro ? cobro.total : comandas.reduce((s, c) => s + c.total, 0);
   b.push(linea(), fila('TOTAL', dinero(total), 14, true), espacio(4));
   if (!cobro) return [...b, linea(), centro('Documento no válido como comprobante de pago', 8)];
-  b.push(fila('Forma de pago', cobro.metodo, 10));
+  // pago mixto: una línea por forma de pago; el vuelto es sobre la parte en efectivo
+  const pagos = cobro.pagos?.length ? cobro.pagos : [{ metodo: cobro.metodo, monto: cobro.total }];
+  if (pagos.length > 1) {
+    b.push(texto('Forma de pago', 10));
+    for (const p of pagos) b.push(fila(`   ${p.metodo}`, dinero(p.monto), 10));
+  } else b.push(fila('Forma de pago', pagos[0].metodo, 10));
   if (cobro.recibido != null) {
-    b.push(fila('Recibido', dinero(cobro.recibido), 10), fila('Vuelto', dinero(cobro.recibido - cobro.total), 10, true));
+    const efectivo = pagos.filter((p) => p.metodo === 'Efectivo').reduce((s, p) => s + p.monto, 0);
+    b.push(fila('Recibido', dinero(cobro.recibido), 10), fila('Vuelto', dinero(cobro.recibido - efectivo), 10, true));
   }
   if (cajero) b.push(texto(`Cobrado por: ${cajero}`, 8));
   b.push(linea());
