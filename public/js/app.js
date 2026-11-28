@@ -75,6 +75,8 @@ function fechaISO(d) {
 const fechaHoy = () => fechaISO(new Date(ahoraServidor()));
 const diaAnterior = (f) => fechaISO(new Date(parseFecha(`${f} 12:00:00`).getTime() - 86400000));
 const puede = (...roles) => S.me && (S.me.roles || [S.me.rol]).some((r) => roles.includes(r));
+// solo cocina (sin otro rol): ve la cola de cocina, no atenciones ni cobros
+const soloCocina = () => !puede('admin', 'mozo', 'caja');
 const tactil = () => matchMedia('(pointer: coarse)').matches;
 
 // ---------------- API ----------------
@@ -387,9 +389,8 @@ function notificar(d) {
   if (!S.me || d.accion === 'eliminada' || d.accion === 'impreso') return;
   const nuevoTicket = d.estado === 'enviado_cocina' && !d.ticket_impreso && ['creada', 'estado', 'editada'].includes(d.accion);
   if (!nuevoTicket) return;
-  const rol = S.me.rol;
   const enTickets = S.vista?.nombre === 'tickets';
-  if (rol === 'cocina' || rol === 'caja' || (rol === 'admin' && enTickets)) {
+  if (puede('cocina', 'caja') || (puede('admin') && enTickets)) {
     const donde = d.tipo === 'llevar' ? 'para llevar' : `mesa ${d.mesa}`;
     // con la ticketera imprimiendo sola, solo se informa (sin alarma)
     if (S.ticketera?.autoComandas) return toast(`🖨️ Comanda #${d.numero} (${donde}) enviada a la ticketera`, 'aviso', 3500);
@@ -1162,15 +1163,14 @@ const lineaItem = (i) => {
 
 function botonesComanda(c) {
   const b = [];
-  const rol = S.me.rol;
   const btn = (estado, texto, clase = '') =>
     `<button class="btn chico ${clase}" data-accion="estado" data-id="${c.id}" data-estado="${estado}">${texto}</button>`;
-  if (c.estado === 'generado' && ['admin', 'mozo', 'caja'].includes(rol)) {
+  if (c.estado === 'generado' && puede('admin', 'mozo', 'caja')) {
     b.push(`<button class="btn chico" data-accion="editar-comanda" data-id="${c.id}">✏️ Editar</button>`);
     b.push(btn('enviado_cocina', '🍳 Enviar a cocina', 'primario'));
   }
-  if (EN_COCINA.includes(c.estado) && ['admin', 'mozo', 'caja'].includes(rol)) b.push(btn('entregado', '🍽️ Entregado', 'ok'));
-  if (['admin', 'caja'].includes(rol) && !c.pagada && c.estado !== 'cancelado')
+  if (EN_COCINA.includes(c.estado) && puede('admin', 'mozo', 'caja')) b.push(btn('entregado', '🍽️ Entregado', 'ok'));
+  if (puede('admin', 'caja') && !c.pagada && c.estado !== 'cancelado')
     b.push(`<button class="btn chico acento" data-accion="cobrar" data-id="${c.id}">💵 Cobrar</button>`);
   return b.join('');
 }
@@ -1204,11 +1204,12 @@ function enlazarChips(main, accion, fn) {
 
 // ---------- Lista de comandas ----------
 async function vComandas(main) {
-  const rol = S.me.rol;
-  const filtros =
-    rol === 'mozo'
-      ? [['activas', 'Activas'], ['mias', 'Mías'], ['todas', 'Todas de hoy']]
-      : [['activas', 'Activas'], ['por_cobrar', 'Por cobrar'], ['todas', 'Todas de hoy']];
+  const filtros = [
+    ['activas', 'Activas'],
+    ...(puede('mozo') ? [['mias', 'Mías']] : []),
+    ...(puede('admin', 'caja') ? [['por_cobrar', 'Por cobrar']] : []),
+    ['todas', 'Todas de hoy'],
+  ];
   if (!filtros.some(([v]) => v === S.filtroComandas)) S.filtroComandas = 'activas';
   const f = S.filtroComandas;
   const qs = f === 'mias' ? 'vista=activas&mias=1' : f === 'todas' ? '' : `vista=${f}`;
@@ -1218,7 +1219,7 @@ async function vComandas(main) {
       <div class="fila entre"><h2>Comandas</h2>
         <span class="suave peq">${lista.length} ${lista.length === 1 ? 'comanda' : 'comandas'}</span></div>
       ${chips(filtros, f, 'filtro')}
-      ${lista.length ? (rol === 'cocina' ? `<div class="grid">${lista.map(tarjetaComanda).join('')}</div>` : porAtencion(lista).map(bloqueAtencion).join('')) : '<div class="vacio">No hay comandas en esta vista.</div>'}
+      ${lista.length ? (soloCocina() ? `<div class="grid">${lista.map(tarjetaComanda).join('')}</div>` : porAtencion(lista).map(bloqueAtencion).join('')) : '<div class="vacio">No hay comandas en esta vista.</div>'}
     </div>
     <button class="btn primario fab" data-accion="nueva-comanda">＋ Nueva comanda</button>`;
   enlazarChips(main, 'filtro', (v) => {
@@ -1256,32 +1257,31 @@ function bloqueAtencion(cs, { mesa = false } = {}) {
 // ---------- Detalle ----------
 async function vComandaDetalle(main, r) {
   const c = await api('GET', `/api/comandas/${r.param}`);
-  const rol = S.me.rol;
   const acciones = [];
-  if (rol !== 'cocina') acciones.push(botonesComanda(c));
+  if (!soloCocina()) acciones.push(botonesComanda(c));
   if (EN_COCINA.includes(c.estado) || c.estado === 'entregado')
-    if (['admin', 'caja', 'cocina'].includes(rol))
+    if (puede('admin', 'caja', 'cocina'))
       acciones.push(`<button class="btn chico" data-accion="imprimir-ticket" data-ids="${c.id}">🖨️ ${c.ticket_impreso ? 'Reimprimir' : 'Imprimir'} ticket</button>`);
-  if (c.pagada && c.cobro_comprobante === 'sunat' && ['admin', 'caja'].includes(rol))
+  if (c.pagada && c.cobro_comprobante === 'sunat' && puede('admin', 'caja'))
     acciones.push(
       c.sunat_id
         ? `<button class="btn chico primario" data-accion="imprimir-sunat" data-id="${c.sunat_id}">🏛️ ${esc(c.sunat_numero)}</button>`
         : `<button class="btn chico acento" data-accion="ir-comprobantes">🏛️ Falta subir el XML de SUNAT</button>`
     );
-  if (c.pagada && c.cobro_id && ['admin', 'caja'].includes(rol)) {
+  if (c.pagada && c.cobro_id && puede('admin', 'caja')) {
     acciones.push(`<button class="btn chico" data-accion="comprobante" data-cobro="${c.cobro_id}">🧾 Nota de venta</button>`);
     if (usaTicketeraCaja()) acciones.push(`<button class="btn chico" data-accion="comprobante-pdf" data-cobro="${c.cobro_id}">PDF</button>`);
     acciones.push(`<button class="btn chico" data-accion="anular-cobro" data-cobro="${c.cobro_id}">Anular cobro</button>`);
   }
   const puedeCancelar =
     !c.pagada &&
-    ((c.estado === 'generado' && ['mozo', 'caja', 'admin'].includes(rol)) ||
-      (EN_COCINA.includes(c.estado) && ['caja', 'admin'].includes(rol)));
+    ((c.estado === 'generado' && puede('mozo', 'caja', 'admin')) ||
+      (EN_COCINA.includes(c.estado) && puede('caja', 'admin')));
   if (puedeCancelar)
     acciones.push(`<button class="btn chico peligro" data-accion="estado" data-id="${c.id}" data-estado="cancelado">Cancelar comanda</button>`);
-  if (rol === 'admin' && EN_COCINA.includes(c.estado) && !c.pagada)
+  if (puede('admin') && EN_COCINA.includes(c.estado) && !c.pagada)
     acciones.push(`<button class="btn chico" data-accion="editar-comanda" data-id="${c.id}">✏️ Editar (admin)</button>`);
-  if (rol === 'admin') acciones.push(`<button class="btn chico peligro" data-accion="eliminar-comanda" data-id="${c.id}">🗑 Eliminar</button>`);
+  if (puede('admin')) acciones.push(`<button class="btn chico peligro" data-accion="eliminar-comanda" data-id="${c.id}">🗑 Eliminar</button>`);
 
   main.innerHTML = `
     <div class="pila">
@@ -1347,7 +1347,7 @@ async function vEditorComanda(main, r, esRecarga) {
 
   const b = {
     id: existente?.id || null,
-    tipo: existente?.tipo || r.query.get('tipo') || (S.me.rol === 'caja' ? 'llevar' : 'local'),
+    tipo: existente?.tipo || r.query.get('tipo') || (puede('caja') && !puede('mozo') ? 'llevar' : 'local'),
     mesa_id: existente?.mesa_id || principalDe(Number(r.query.get('mesa'))),
     cliente: existente?.cliente || '',
     nota: existente?.nota || '',
@@ -2061,7 +2061,6 @@ const estadoMesa = (m) => (!m.ocupada ? 'libre' : m.por_entregar ? 'ocupada' : '
 const enPlano = (o, H) => `left:${o.x}%;top:${(o.y / H) * 100}%;width:${o.ancho}%;height:${(o.alto / H) * 100}%`;
 
 async function vMesas(main) {
-  const rol = S.me.rol;
   const [mesas, comandas, plano] = await Promise.all([
     api('GET', '/api/mesas'),
     api('GET', '/api/comandas?vista=por_cobrar'),
@@ -2073,7 +2072,7 @@ async function vMesas(main) {
   const pisos = [...new Set(activas.map((m) => m.piso))];
   if (!pisos.includes(S.salonPiso)) S.salonPiso = pisos[0];
   const modo = S.salonModo || 'mapa';
-  const editar = rol === 'admin' && S.salonEditar;
+  const editar = puede('admin') && S.salonEditar;
   const unir = S.salonUnir; // Set de ids mientras se eligen mesas para unir
   const delPiso = activas.filter((m) => m.piso === S.salonPiso);
   const elementos = plano.elementos.filter((e) => e.piso === S.salonPiso);
@@ -2131,7 +2130,7 @@ async function vMesas(main) {
           modo === 'mapa'
             ? `${pisos.length > 1 ? `<div class="segmento compacto">${pisos.map((p) => `<button data-piso="${esc(p)}" class="${p === S.salonPiso ? 'activo' : ''}">${esc(p)}</button>`).join('')}</div>` : ''}
               ${!editar && !unir ? '<button class="btn chico" id="modo-unir">🔗 Unir mesas</button>' : ''}
-              ${rol === 'admin' && !editar && !unir ? '<button class="btn chico" id="modo-editar">✏️ Editar plano</button>' : ''}
+              ${puede('admin') && !editar && !unir ? '<button class="btn chico" id="modo-editar">✏️ Editar plano</button>' : ''}
               <div class="conteos"><span class="libre">Libre ${cuenta('libre')}</span><span class="ocupada">Ocupada ${cuenta('ocupada')}</span><span class="cobrar">Por cobrar ${cuenta('cobrar')}</span></div>`
             : ''
         }
