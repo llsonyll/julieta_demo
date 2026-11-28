@@ -769,7 +769,7 @@ async function cobrarAtencion(atencionId) {
               .map((it) => {
                 const g = detalleGuarnicion(it);
                 return `<div class="toggle-fila on fila-cobro">
-                  <div class="crecer"><div>${esc(it.nombre)} <span class="suave peq">${dinero(it.precio)}</span></div>${g ? `<div class="guar">${g}</div>` : ''}</div>
+                  <div class="crecer"><div>${esc(it.nombre)}${c.tipo === 'local' && it.para_llevar && esPlato(it) ? ` ${ETIQUETA_LLEVAR}` : ''} <span class="suave peq">${dinero(it.precio)}</span></div>${g ? `<div class="guar">${g}</div>` : ''}</div>
                   <div class="contador-cant"><button type="button" data-menos="${it.id}">−</button><span class="v" data-n="${it.id}"></span><button type="button" class="mas" data-mas-cobro="${it.id}">＋</button></div>
                 </div>`;
               })
@@ -1250,10 +1250,17 @@ function detalleGuarnicion(it) {
 }
 // el envase se cobra pero no se cocina: no va en tarjetas ni tickets
 const esPlato = (i) => i.tipo !== 'envase';
-/** enMesa: marca 🥡 los platos para llevar de una comanda de mesa */
+// Platos para llevar dentro de una comanda de mesa: etiqueta en cada plato y resumen en la tarjeta
+const ETIQUETA_LLEVAR = '<span class="etiqueta llevar">🥡 LLEVAR</span>';
+const llevarEnMesa = (c) => (c.tipo === 'local' ? c.items.filter((i) => esPlato(i) && i.para_llevar).reduce((s, i) => s + i.cantidad, 0) : 0);
+const resumenLlevar = (c) => {
+  const n = llevarEnMesa(c);
+  return n ? `<span class="etiqueta llevar">🥡 ${n} PARA LLEVAR</span>` : '';
+};
+/** enMesa: marca los platos para llevar de una comanda de mesa */
 const lineaItem = (i, enMesa) => {
   const g = detalleGuarnicion(i);
-  return `<li>${enMesa && i.para_llevar ? '🥡 ' : ''}${i.cantidad}× ${esc(i.nombre)}${g ? `<div class="guar">${g}</div>` : ''}${i.nota ? `<div class="guar nota-item">📝 ${esc(i.nota)}</div>` : ''}</li>`;
+  return `<li class="${enMesa && i.para_llevar ? 'item-llevar' : ''}">${i.cantidad}× ${esc(i.nombre)}${enMesa && i.para_llevar ? ` ${ETIQUETA_LLEVAR}` : ''}${g ? `<div class="guar">${g}</div>` : ''}${i.nota ? `<div class="guar nota-item">📝 ${esc(i.nota)}</div>` : ''}</li>`;
 };
 
 function botonesComanda(c) {
@@ -1282,7 +1289,7 @@ function tarjetaComanda(c) {
   return `
     <div class="tarjeta comanda ${claseEstado(c.estado)}" data-accion="ver-comanda" data-id="${c.id}">
       <div class="fila entre"><span class="num">#${c.numero_dia}</span>${badge(c.estado)}</div>
-      <div class="fila envolver" style="margin-top:4px">${lugar(c)} ${etiquetaAtencion(c)}
+      <div class="fila envolver" style="margin-top:4px">${lugar(c)} ${etiquetaAtencion(c)} ${resumenLlevar(c)}
         <span class="suave peq">· ${esc(c.mozo_nombre || '')} · ${hora(c.creado_en)}</span>
         ${etiquetaPago(c)}
         ${pendienteTicket ? '<span class="etiqueta llevar">🖨️ TICKET PENDIENTE</span>' : ''}</div>
@@ -1409,7 +1416,8 @@ async function vComandaDetalle(main, r) {
             .map((i) => {
               const g = detalleGuarnicion(i);
               const parcial = i.cobrado > 0 && i.cobrado < i.cantidad ? ` <span class="etiqueta llevar">${i.cobrado}/${i.cantidad} COBRADO</span>` : '';
-              return `<tr><td><b>${i.cantidad}</b></td><td>${esc(i.nombre)}${i.tipo === 'menu' ? ' <span class="etiqueta">MENÚ</span>' : ''}${parcial}
+              const llevar = c.tipo === 'local' && i.para_llevar && esPlato(i) ? ` ${ETIQUETA_LLEVAR}` : '';
+              return `<tr><td><b>${i.cantidad}</b></td><td>${esc(i.nombre)}${i.tipo === 'menu' ? ' <span class="etiqueta">MENÚ</span>' : ''}${llevar}${parcial}
                 ${g ? `<div class="guar">${g}</div>` : ''}${i.nota ? `<div class="nota">${esc(i.nota)}</div>` : ''}</td>
                 <td class="num">${dinero(i.precio)}</td><td class="num">${dinero(i.precio * i.cantidad)}</td></tr>`;
             })
@@ -1907,7 +1915,7 @@ async function vTickets(main) {
   const panelCola = tq ? await panelTicketera() : '';
   const ticket = (c) => `
     <div class="tarjeta ticket-prev ${c.ticket_impreso ? 'impreso' : ''}">
-      <div class="fila entre"><span class="num">#${c.numero_dia} · ${lugar(c)}</span>
+      <div class="fila entre"><span class="num">#${c.numero_dia} · ${lugar(c)} ${resumenLlevar(c)}</span>
         <span class="tiempo" data-desde="${esc(c.enviado_en || c.creado_en)}"></span></div>
       <div class="suave peq">${esc(c.mozo_nombre || '')} · enviado ${hora(c.enviado_en)} ${c.ticket_modificado ? '· <b>MODIFICADA</b>' : ''}</div>
       <ul class="items">${c.items.filter(esPlato).map((i) => lineaItem(i, c.tipo === 'local')).join('')}</ul>
