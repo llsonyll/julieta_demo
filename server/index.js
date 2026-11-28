@@ -357,7 +357,7 @@ app.get(
   '/api/mesas',
   ruta((req) => {
     const todas = listarMesas();
-    return req.user.rol === 'admin' ? todas : todas.filter((m) => m.activa);
+    return req.user.roles.includes('admin') ? todas : todas.filter((m) => m.activa);
   })
 );
 
@@ -540,16 +540,19 @@ app.delete(
 );
 
 // ---------------- platos (catálogo) ----------------
-const ROLES_MENU = ['sopa', 'fijo', 'variable'];
+const ROLES_MENU = ['sopa', 'refresco', 'fijo', 'variable'];
+// sopa y refresco: uno por día, van incluidos en el menú (no se piden solos ni llevan guarnición)
+const UNICOS_DIA = ['sopa', 'refresco'];
 const precioMenu = () => Number(db.prepare("SELECT valor FROM ajustes WHERE clave = 'precio_menu'").get()?.valor) || 0;
-// Sin sopa elegida no hay menú ese día
-const sopaDelDia = (fecha) =>
+// Sopa / refresco del día. Sin sopa elegida no hay menú ese día; el refresco es opcional
+const unicoDelDia = (fecha, rol) =>
   db.prepare(`SELECT p.* FROM menu_dia m JOIN productos p ON p.id = m.producto_id
-    WHERE m.fecha = ? AND p.tipo = 'menu' AND p.menu_rol = 'sopa' AND p.activo = 1`).get(fecha) || null;
-// El menú lleva una sola sopa: elegir otra reemplaza la anterior
+    WHERE m.fecha = ? AND p.tipo = 'menu' AND p.menu_rol = ? AND p.activo = 1`).get(fecha, rol) || null;
+// El menú lleva una sola sopa y un solo refresco: elegir otro reemplaza al anterior
 function incluirEnMenu(fecha, id) {
-  if (db.prepare("SELECT 1 FROM productos WHERE id = ? AND menu_rol = 'sopa'").get(id))
-    db.prepare("DELETE FROM menu_dia WHERE fecha = ? AND producto_id IN (SELECT id FROM productos WHERE menu_rol = 'sopa')").run(fecha);
+  const rol = db.prepare("SELECT menu_rol FROM productos WHERE id = ? AND tipo = 'menu'").get(id)?.menu_rol;
+  if (UNICOS_DIA.includes(rol))
+    db.prepare("DELETE FROM menu_dia WHERE fecha = ? AND producto_id IN (SELECT id FROM productos WHERE tipo = 'menu' AND menu_rol = ?)").run(fecha, rol);
   db.prepare('INSERT OR IGNORE INTO menu_dia (fecha, producto_id) VALUES (?,?)').run(fecha, id);
 }
 const SQL_PRODUCTO = `SELECT p.*, g.nombre AS guarnicion_base FROM productos p
@@ -558,7 +561,7 @@ const SQL_PRODUCTO = `SELECT p.*, g.nombre AS guarnicion_base FROM productos p
 app.get(
   '/api/productos',
   ruta((req) => {
-    const where = req.user.rol === 'admin' ? '1=1' : 'p.activo = 1';
+    const where = req.user.roles.includes('admin') ? '1=1' : 'p.activo = 1';
     return db.prepare(`${SQL_PRODUCTO} WHERE ${where} ORDER BY p.tipo DESC, p.categoria, p.nombre`).all();
   })
 );
@@ -567,14 +570,15 @@ function validarProducto(b) {
   const nombre = texto(b.nombre, 120);
   if (!nombre) fail(400, 'El nombre es obligatorio');
   const tipo = ['menu', 'extra', 'bebidas'].includes(b.tipo) ? b.tipo : fail(400, 'Indique si es menú, extra o bebida');
-  const menu_rol = tipo === 'extra' || tipo === 'bebidas' ? 'variable' : ROLES_MENU.includes(b.menu_rol) ? b.menu_rol : fail(400, 'Indique si es sopa, segundo fijo o variable');
+  const menu_rol = tipo === 'extra' || tipo === 'bebidas' ? 'variable' : ROLES_MENU.includes(b.menu_rol) ? b.menu_rol : fail(400, 'Indique si es sopa, refresco, segundo fijo o variable');
   // los platos del menú no tienen precio propio: se cobra el precio fijo del menú
   const precio = tipo === 'menu' ? 0 : Number(b.precio);
   if (((tipo === 'extra' || tipo === 'bebidas') && b.precio === '') || !Number.isFinite(precio) || precio < 0) fail(400, 'Precio inválido');
   let guarnicion_base_id = b.guarnicion_base_id ? Number(b.guarnicion_base_id) : null;
   if (guarnicion_base_id && !db.prepare('SELECT 1 FROM guarniciones WHERE id = ?').get(guarnicion_base_id))
     fail(400, 'La guarnición elegida no existe');
-  if (menu_rol === 'sopa' && tipo === 'menu') guarnicion_base_id = null; // la sopa no lleva guarnición
+  const sinGuarnicion = tipo === 'menu' && UNICOS_DIA.includes(menu_rol);
+  if (sinGuarnicion) guarnicion_base_id = null; // sopa y refresco no llevan guarnición
   const p = {
     nombre,
     descripcion: texto(b.descripcion, 300),
@@ -583,7 +587,7 @@ function validarProducto(b) {
     tipo,
     menu_rol,
     guarnicion_base_id,
-    con_eleccion: menu_rol === 'sopa' && tipo === 'menu' ? 0 : bool(b.con_eleccion),
+    con_eleccion: sinGuarnicion ? 0 : bool(b.con_eleccion),
     para_local: b.para_local === undefined ? 1 : bool(b.para_local),
     para_llevar: b.para_llevar === undefined ? 1 : bool(b.para_llevar),
     disponible: b.disponible === undefined ? 1 : bool(b.disponible),
@@ -602,7 +606,7 @@ app.post(
     const p = validarProducto(req.body);
     const id = tx(() => {
       const nuevo = db.prepare(`INSERT INTO productos (${COLS_P}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(...valoresP(p)).lastInsertRowid;
-      // una sopa o segundo variable creado se agrega al menú de la fecha indicada (por defecto, hoy)
+      // una sopa, refresco o segundo variable creado se agrega al menú de la fecha indicada (por defecto, hoy)
       if (p.tipo === 'menu' && p.menu_rol !== 'fijo' && req.body.agregar_a_fecha !== false)
         incluirEnMenu(esFecha(req.body.agregar_a_fecha) ? req.body.agregar_a_fecha : hoy(), nuevo);
       return nuevo;
@@ -657,7 +661,8 @@ app.delete(
 // ---------------- carta del día ----------------
 function cartaDelDia(fecha, completo) {
   const enMenu = new Set(db.prepare('SELECT producto_id FROM menu_dia WHERE fecha = ?').all(fecha).map((r) => r.producto_id));
-  const sopa = sopaDelDia(fecha);
+  const sopa = unicoDelDia(fecha, 'sopa');
+  const refresco = unicoDelDia(fecha, 'refresco');
   const delDia = new Set(db.prepare('SELECT guarnicion_id FROM guarniciones_dia WHERE fecha = ?').all(fecha).map((r) => r.guarnicion_id));
   const productos = db
     .prepare(`${SQL_PRODUCTO} WHERE ${completo ? '1=1' : 'p.activo = 1'} ORDER BY p.categoria, p.nombre`)
@@ -671,9 +676,11 @@ function cartaDelDia(fecha, completo) {
     fecha,
     precio_menu: precioMenu(),
     sopa,
+    refresco,
     sopas: productos.filter((p) => p.tipo === 'menu' && p.menu_rol === 'sopa' && (completo || p.en_carta)),
+    refrescos: productos.filter((p) => p.tipo === 'menu' && p.menu_rol === 'refresco' && (completo || p.en_carta)),
     // segundos del menú: fijos (todos los días con menú) + variables del día
-    menu: productos.filter((p) => p.tipo === 'menu' && p.menu_rol !== 'sopa' && (completo || (p.en_carta && sopa))),
+    menu: productos.filter((p) => p.tipo === 'menu' && !UNICOS_DIA.includes(p.menu_rol) && (completo || (p.en_carta && sopa))),
     extras: productos.filter((p) => p.tipo === 'extra'),
     bebidas: productos.filter((p) => p.tipo === 'bebidas'),
     guarniciones,
@@ -684,7 +691,7 @@ app.get(
   '/api/carta',
   ruta((req) => {
     const fecha = esFecha(req.query.fecha) ? req.query.fecha : hoy();
-    return cartaDelDia(fecha, req.user.rol === 'admin' && req.query.completo === '1');
+    return cartaDelDia(fecha, req.user.roles.includes('admin') && req.query.completo === '1');
   })
 );
 
@@ -838,16 +845,17 @@ function prepararItems(itemsBody, tipo) {
   if (!Array.isArray(itemsBody) || !itemsBody.length) fail(400, 'Agregue al menos un plato');
   const getP = db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`);
   const getG = db.prepare('SELECT * FROM guarniciones WHERE id = ?');
-  const sopa = sopaDelDia(hoy());
+  const sopa = unicoDelDia(hoy(), 'sopa');
+  const refresco = unicoDelDia(hoy(), 'refresco');
   return itemsBody.map((it) => {
     const p = getP.get(Number(it.producto_id));
     if (!p || !p.activo) fail(400, 'Uno de los platos ya no existe');
     if (tipo === 'local' && !p.para_local) fail(400, `"${p.nombre}" no está disponible para mesa`);
     if (tipo === 'llevar' && !p.para_llevar) fail(400, `"${p.nombre}" no está disponible para llevar`);
     const cantidad = Math.max(1, Math.min(99, parseInt(it.cantidad, 10) || 1));
-    // Menú: se elige el segundo, la sopa del día va incluida y se cobra el precio fijo
+    // Menú: se elige el segundo, la sopa y el refresco del día van incluidos y se cobra el precio fijo
     const esMenu = p.tipo === 'menu';
-    if (esMenu && p.menu_rol === 'sopa') fail(400, `"${p.nombre}" es la sopa: elija un segundo del menú`);
+    if (esMenu && UNICOS_DIA.includes(p.menu_rol)) fail(400, `"${p.nombre}" va incluido en el menú: elija un segundo`);
     if (esMenu && !sopa) fail(400, 'Hoy no hay menú (falta elegir la sopa del día)');
     if (esMenu && !precioMenu()) fail(400, 'Falta poner el precio del menú (Gestión → Carta del día)');
 
@@ -875,6 +883,7 @@ function prepararItems(itemsBody, tipo) {
       tipo: p.tipo,
       precio: esMenu ? precioMenu() : p.precio,
       sopa: esMenu ? sopa.nombre : '',
+      refresco: esMenu && refresco ? refresco.nombre : '',
       cantidad,
       nota: texto(it.nota, 150),
       disponible: p.disponible,
@@ -902,13 +911,13 @@ function guardarItems(comandaId, items) {
   db.prepare('DELETE FROM comanda_items WHERE comanda_id = ?').run(comandaId);
   const ins = db.prepare(
     `INSERT INTO comanda_items (comanda_id, producto_id, nombre, tipo, precio, cantidad, nota,
-       guarnicion_base_id, guarnicion_base, guarnicion_defecto, guarnicion_eleccion_id, guarnicion_eleccion, sopa)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       guarnicion_base_id, guarnicion_base, guarnicion_defecto, guarnicion_eleccion_id, guarnicion_eleccion, sopa, refresco)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   let total = 0;
   for (const it of items) {
     ins.run(comandaId, it.producto_id, it.nombre, it.tipo, it.precio, it.cantidad, it.nota,
-      it.guarnicion_base_id, it.guarnicion_base, it.guarnicion_defecto, it.guarnicion_eleccion_id, it.guarnicion_eleccion, it.sopa);
+      it.guarnicion_base_id, it.guarnicion_base, it.guarnicion_defecto, it.guarnicion_eleccion_id, it.guarnicion_eleccion, it.sopa, it.refresco);
     total += it.precio * it.cantidad;
   }
   db.prepare('UPDATE comandas SET total = ?, actualizado_en = ? WHERE id = ?').run(redondear(total), ahora(), comandaId);
@@ -967,7 +976,7 @@ app.put(
   ruta((req) => {
     const c = comandaVisible(req);
     if (c.pagada) fail(400, 'La comanda ya está cobrada');
-    const editable = c.estado === 'generado' || (req.user.rol === 'admin' && !['entregado', 'cancelado'].includes(c.estado));
+    const editable = c.estado === 'generado' || (req.user.roles.includes('admin') && !['entregado', 'cancelado'].includes(c.estado));
     if (!editable) fail(400, 'Solo se pueden editar comandas que aún no se enviaron a cocina');
     const cab = validarCabecera(req.body);
     const items = prepararItems(req.body.items, cab.tipo);

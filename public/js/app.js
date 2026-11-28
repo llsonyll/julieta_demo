@@ -17,7 +17,6 @@ const S = {
   timers: [],
   filtroComandas: 'activas',
   adminTab: 'carta',
-  filtroPlatos: 'todos',
   filtroCarta: 'todas',
   fechaCarta: null,
   fechaReporte: null,
@@ -992,6 +991,7 @@ const lugar = (c) =>
 /** Texto de guarniciones de un ítem de comanda */
 function detalleGuarnicion(it) {
   const partes = it.sopa ? [`Sopa: ${esc(it.sopa)}`] : [];
+  if (it.refresco) partes.push(`Refresco: ${esc(it.refresco)}`);
   if (it.guarnicion_defecto && !it.guarnicion_base) partes.push(`<b>sin ${esc(it.guarnicion_defecto.toLowerCase())}</b>`);
   else if (it.guarnicion_base && it.guarnicion_defecto && it.guarnicion_base !== it.guarnicion_defecto)
     partes.push(`<b>${esc(it.guarnicion_base)}</b> (cambio)`);
@@ -1151,10 +1151,9 @@ async function vEditorComanda(main, r, esRecarga) {
   const porId = new Map(productos.map((p) => [p.id, p]));
   const guarniciones = carta.guarniciones; // activas
   const guarPorId = new Map(guarniciones.map((g) => [g.id, g]));
-  const delDia = guarniciones.filter((g) => g.del_dia);
-  const habituales = guarniciones.filter((g) => g.eleccion_habitual);
-  // a elección: las marcadas para el día; si no hay, las habituales; si tampoco, todas
-  const opcionesEleccion = delDia.length ? delDia : habituales.length ? habituales : guarniciones;
+  // a elección: solo las marcadas para el día (Gestión → Carta del día)
+  const opcionesEleccion = guarniciones.filter((g) => g.del_dia);
+  const incluidoMenu = [carta.sopa && `Sopa: ${esc(carta.sopa.nombre)}`, carta.refresco && `Refresco: ${esc(carta.refresco.nombre)}`].filter(Boolean);
 
   const b = {
     id: existente?.id || null,
@@ -1189,13 +1188,13 @@ async function vEditorComanda(main, r, esRecarga) {
   function textoLinea(l) {
     const p = porId.get(l.producto_id);
     if (p.tipo === 'bebidas') return '';
-    const partes = p.tipo === 'menu' && carta.sopa ? [`Sopa: ${esc(carta.sopa.nombre)}`] : [];
+    const partes = p.tipo === 'menu' ? [...incluidoMenu] : [];
     if (p.guarnicion_base_id) {
       if (!l.base) partes.push(`<b>sin ${esc(p.guarnicion_base.toLowerCase())}</b>`);
       else if (l.base !== p.guarnicion_base_id) partes.push(`<b>${esc(nombreG(l.base))}</b> (cambio)`);
       else partes.push(esc(p.guarnicion_base));
     }
-    if (p.con_eleccion) partes.push(l.eleccion ? esc(nombreG(l.eleccion)) : '<span class="falta">sin guarnición a elección</span>');
+    if (p.con_eleccion && opcionesEleccion.length) partes.push(l.eleccion ? esc(nombreG(l.eleccion)) : '<span class="falta">sin guarnición a elección</span>');
     return partes.join(' + ');
   }
 
@@ -1220,8 +1219,8 @@ async function vEditorComanda(main, r, esRecarga) {
         <div class="opciones">${opcionesBase
           .map((g) => `<button type="button" class="chip ${g.id === base ? 'activo' : ''}" data-base="${g.id}">${esc(g.nombre)}</button>`)
           .join('')}<button type="button" class="chip ${!base ? 'activo' : ''}" data-base="">Sin guarnición</button></div></div>
-      ${p.con_eleccion
-        ? `<div><div class="etiqueta-campo">Guarnición a elección${delDia.length ? ' (de hoy)' : ''}</div>
+      ${p.con_eleccion && opcionesEleccion.length
+        ? `<div><div class="etiqueta-campo">Guarnición a elección (de hoy)</div>
            <div class="opciones">${opcionesEleccion
              .map((g) => `<button type="button" class="chip ${g.id === eleccion ? 'activo' : ''}" data-eleccion="${g.id}">${esc(g.nombre)}</button>`)
              .join('')}<button type="button" class="chip ${idx != null && !eleccion ? 'activo' : ''}" data-eleccion="0">Ninguna</button></div></div>`
@@ -1230,7 +1229,7 @@ async function vEditorComanda(main, r, esRecarga) {
     const m = abrirModal(`
       <div class="pila">
         <div class="fila entre"><h3>${esc(p.nombre)}</h3><button class="btn chico" data-x>✕</button></div>
-        <div class="suave">${dinero(p.precio)}${p.tipo === 'menu' && carta.sopa ? ` · menú con sopa: ${esc(carta.sopa.nombre)}` : ''}</div>
+        <div class="suave">${p.tipo === 'menu' ? `Menú ${dinero(p.precio)} · incluye ${incluidoMenu.join(' + ').toLowerCase()}` : dinero(p.precio)}</div>
         ${htmlGuarnicion}
         <label class="campo"><span>Nota para cocina (opcional)</span>
           <input id="nota-plato" value="${esc(l.nota)}" placeholder="Ej: bien cocido, sin cebolla" maxlength="150" autocomplete="off"></label>
@@ -1297,7 +1296,7 @@ async function vEditorComanda(main, r, esRecarga) {
         <span class="cuenta ${n ? '' : 'oculto'}">${n}</span>
         <span class="fila entre"><b>${esc(p.nombre)}</b>${!p.disponible ? '<span class="insignia no">Agotado</span>' : ''}</span>
         <small class="suave desc">${esc(p.descripcion)}</small>
-        <span class="pie"><b class="precio">${dinero(p.precio)}</b><small class="suave">${esc(guar)}</small></span>
+        <span class="pie"><b class="precio">${p.tipo === 'menu' ? '' : dinero(p.precio)}</b><small class="suave">${esc(guar)}</small></span>
       </button>`;
   }
 
@@ -1318,7 +1317,7 @@ async function vEditorComanda(main, r, esRecarga) {
         : '';
     $('#grid', main).innerHTML =
       (pestana === 'menu' && carta.sopa && carta.menu.length
-        ? `<div class="suave" style="grid-column:1/-1">🍲 Sopa: <b>${esc(carta.sopa.nombre)}</b> · Menú ${dinero(carta.precio_menu)} — elija el segundo</div>`
+        ? `<div class="suave" style="grid-column:1/-1">🍲 Menú <b>${dinero(carta.precio_menu)}</b> · ${incluidoMenu.join(' · ')} — elija el segundo</div>`
         : '') +
         lista.map(tarjetaPlato).join('') ||
       `<div class="vacio">${pestana === 'menu' && !carta.menu.length ? 'No hay menú del día cargado para hoy.' : 'Sin platos.'}</div>`;
@@ -2089,10 +2088,10 @@ async function vCarta(main) {
   const puedeAgotar = puede('admin', 'cocina', 'caja');
   const carta = await api('GET', `/api/carta${admin ? '?completo=1' : ''}`);
   const f = S.filtroCarta || 'todas';
-  const todos = [...(carta.sopas || []), ...carta.menu, ...carta.extras, ...(carta.bebidas || [])];
+  const todos = [...(carta.sopas || []), ...(carta.refrescos || []), ...carta.menu, ...carta.extras, ...(carta.bebidas || [])];
   const lista = todos.filter((p) => f === 'todas' || p.tipo === f);
   const delDia = carta.guarniciones.filter((g) => g.activo && g.del_dia);
-  const aEleccion = (delDia.length ? delDia : carta.guarniciones.filter((g) => g.activo && g.eleccion_habitual)).map((g) => g.nombre);
+  const aEleccion = delDia.map((g) => g.nombre);
   const menuHoy = carta.sopa ? carta.menu.filter((p) => p.activo && p.en_carta).length : 0;
   const extrasActivos = carta.extras.filter((p) => p.activo).length;
   const bebidasActivos = (carta.bebidas || []).filter((p) => p.activo).length;
@@ -2105,7 +2104,7 @@ async function vCarta(main) {
            aria-label="${delDiaMenu(p) ? 'Sale hoy' : 'Activo'}: ${esc(p.nombre)}"></button>`
       : '';
   const guarnicion = (p) =>
-    p.tipo === 'bebidas'
+    p.tipo === 'bebidas' || p.menu_rol === 'sopa' || p.menu_rol === 'refresco'
       ? '<span class="suave">—</span>'
       : p.guarnicion_base || p.con_eleccion
         ? `${p.guarnicion_base ? esc(p.guarnicion_base) : '—'}<div class="suave peq">${p.con_eleccion ? '+ 1 a elección (sin costo)' : 'cambiable'}</div>`
@@ -2115,7 +2114,7 @@ async function vCarta(main) {
       <td><b>${esc(p.nombre)}</b>${p.descripcion ? `<div class="suave peq recorte">${esc(p.descripcion)}</div>` : ''}</td>
       <td>${p.tipo === 'menu' ? `Menú · ${ROL_MENU[p.menu_rol]}` : p.tipo === 'bebidas' ? 'Bebidas' : 'Extras'}<div class="suave peq">${esc(p.categoria)}</div></td>
       <td>${guarnicion(p)}</td>
-      <td class="num precio">${p.tipo === 'menu' ? `<span class="suave">menú ${dinero(carta.precio_menu)}</span>` : p.precio > 0 ? dinero(p.precio) : '<span class="suave">Sin precio</span>'}</td>
+      <td class="num precio">${p.tipo === 'menu' ? '<span class="suave">—</span>' : p.precio > 0 ? dinero(p.precio) : '<span class="suave">Sin precio</span>'}</td>
       ${admin ? `<td>${interruptor(p)}</td>` : ''}
       <td>${
         puedeAgotar
@@ -2139,10 +2138,10 @@ async function vCarta(main) {
         }
       </div>
       <div class="fila envolver">
-        ${tarjetaCarta('menu', 'Menú del día', carta.sopa ? `${dinero(carta.precio_menu)} · ${esc(carta.sopa.nombre)} + ${menuHoy} segundos` : 'Hoy sin menú (falta la sopa)')}
+        ${tarjetaCarta('menu', 'Menú del día', carta.sopa ? `${dinero(carta.precio_menu)} · ${esc(carta.sopa.nombre)}${carta.refresco ? ` + ${esc(carta.refresco.nombre)}` : ''} + ${menuHoy} segundos` : 'Hoy sin menú (falta la sopa)')}
         ${tarjetaCarta('extra', 'Extras', `${extrasActivos} platos activos · carta fija`)}
         ${tarjetaCarta('bebidas', 'Bebidas', `${bebidasActivos} bebidas activas · carta fija`)}
-        <div class="tarjeta carta-resumen"><b>A elección hoy</b><small class="suave">${esc(aEleccion.join(', ') || 'cualquier guarnición')}</small></div>
+        <div class="tarjeta carta-resumen"><b>A elección hoy</b><small class="suave">${esc(aEleccion.join(', ') || 'ninguna marcada')}</small></div>
       </div>
       <div class="fila entre envolver">
         <div class="segmento compacto">${[['todas', 'Todas'], ['menu', 'Menú del día'], ['extra', 'Extras'], ['bebidas', 'Bebidas']]
@@ -2157,7 +2156,7 @@ async function vCarta(main) {
           <tbody>${lista.map(fila).join('') || `<tr><td colspan="7" class="vacio">Sin platos.</td></tr>`}</tbody>
         </table>
       </div>
-      <p class="suave peq">Los extras llevan su guarnición por defecto; el cliente puede cambiarla y/o agregar una a elección sin costo adicional.</p>
+      <p class="suave peq">El menú (sopa + refresco + segundo) se cobra a precio fijo. Los segundos y extras llevan su guarnición por defecto; el cliente puede cambiarla y/o agregar una a elección del día sin costo adicional.</p>
     </div>`;
   enlazarChips(main, 'fc', (v) => {
     S.filtroCarta = S.filtroCarta === v ? 'todas' : v;
@@ -2249,14 +2248,14 @@ async function vReporte(main) {
 
 // ---------- Gestión (admin) ----------
 async function vAdmin(main) {
-  const tabs = [['carta', '📅 Carta del día'], ['platos', '🍲 Platos'], ['guarniciones', '🥗 Guarniciones'], ['mesas', '🍽️ Mesas'], ['usuarios', '👤 Usuarios'], ['impresora', '🖨️ Impresora']];
+  const tabs = [['carta', '📅 Carta del día'], ['guarniciones', '🥗 Guarniciones'], ['mesas', '🍽️ Mesas'], ['usuarios', '👤 Usuarios'], ['impresora', '🖨️ Impresora']];
   main.innerHTML = `<div class="pila">${chips(tabs, S.adminTab, 'at')}<div id="admin-cont"></div></div>`;
   enlazarChips(main, 'at', (v) => {
     S.adminTab = v;
     vAdmin(main);
   });
   const cont = $('#admin-cont', main);
-  await { carta: adminCarta, platos: adminPlatos, guarniciones: adminGuarniciones, mesas: adminMesas, usuarios: adminUsuarios, impresora: adminImpresora }[S.adminTab](cont);
+  await { carta: adminCarta, guarniciones: adminGuarniciones, mesas: adminMesas, usuarios: adminUsuarios, impresora: adminImpresora }[S.adminTab](cont);
 }
 
 /** Gestión → Impresora: conexión de la ticketera térmica y qué imprime */
@@ -2387,7 +2386,7 @@ async function adminImpresora(cont) {
 }
 
 /** Formulario de plato (crear o editar) */
-const ROL_MENU = { sopa: 'Sopa', fijo: 'Segundo fijo', variable: 'Segundo variable' };
+const ROL_MENU = { sopa: 'Sopa', refresco: 'Refresco', fijo: 'Segundo fijo', variable: 'Segundo variable' };
 async function formularioPlato(p, { tipo, fecha } = {}) {
   const [guarniciones, productos] = await Promise.all([api('GET', '/api/guarniciones'), api('GET', '/api/productos')]);
   const categorias = [...new Set(productos.map((x) => x.categoria).filter(Boolean))];
@@ -2401,12 +2400,13 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
         ['variable', 'Menú · segundo variable (se elige qué días sale)'],
         ['fijo', 'Menú · segundo fijo (sale todos los días con menú)'],
         ['sopa', 'Menú · sopa (una por día)'],
+        ['refresco', 'Menú · refresco (uno por día)'],
         ['extra', 'Extra (carta fija, precio propio)'],
         ['bebidas', 'Bebida (carta fija, precio propio)'],
       ],
       def: tipo || 'variable',
     },
-    { n: 'precio', l: `Precio (${S.config.moneda}) — solo extras y bebidas`, t: 'number', paso: '0.10', ayuda: 'Sopa y segundos del menú se cobran al precio fijo del menú.' },
+    { n: 'precio', l: `Precio (${S.config.moneda}) — solo extras y bebidas`, t: 'number', paso: '0.10', ayuda: 'Lo del menú (sopa, refresco, segundos) se cobra al precio fijo del menú.' },
     {
       n: 'guarnicion_base_id',
       l: 'Guarnición por defecto',
@@ -2443,7 +2443,7 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
   const el = f.elements;
   const ajustar = () => {
     el.precio.closest('label').style.display = ['extra', 'bebidas'].includes(el.tipo.value) ? '' : 'none';
-    const sinGuar = el.tipo.value === 'sopa' || el.tipo.value === 'bebidas';
+    const sinGuar = ['sopa', 'refresco', 'bebidas'].includes(el.tipo.value);
     if (sinGuar) (el.guarnicion_base_id.value = ''), (el.con_eleccion.checked = false);
     el.guarnicion_base_id.disabled = el.con_eleccion.disabled = sinGuar;
   };
@@ -2459,6 +2459,7 @@ async function adminCarta(cont) {
   const fijos = menu.filter((p) => p.menu_rol === 'fijo');
   const variables = menu.filter((p) => p.menu_rol !== 'fijo');
   const sopas = carta.sopas.filter((p) => p.activo);
+  const refrescos = carta.refrescos.filter((p) => p.activo);
   const delDia = carta.guarniciones.filter((g) => g.activo && g.del_dia);
   const esHoy = fecha === fechaHoy();
   // los segundos fijos no se marcan: salen todos los días que hay menú
@@ -2484,10 +2485,12 @@ async function adminCarta(cont) {
           <form class="fila" id="form-precio-menu"><span>Precio del menú</span>
             <input class="entrada" name="precio" type="number" step="0.10" min="0" inputmode="decimal" value="${carta.precio_menu || ''}" style="width:100px" required>
             <button class="btn chico">Guardar</button></form></div>
-        <p class="suave peq">El menú es una sopa + un segundo a elección, siempre al mismo precio. Los platos se crean una sola vez y se reutilizan.</p>
+        <p class="suave peq">El menú es sopa + refresco + un segundo a elección, siempre al mismo precio. Los platos se crean una sola vez y se reutilizan.</p>
         <div class="fila entre"><h4>🍲 Sopa del día</h4><button class="btn chico" data-nuevo-menu="sopa">＋ Sopa</button></div>
         ${carta.sopa ? '' : '<div class="error">Sin sopa elegida este día no hay menú.</div>'}
         ${sopas.map(filaMenu).join('') || '<div class="suave">Aún no hay sopas. Cree la primera.</div>'}
+        <div class="fila entre"><h4>🥤 Refresco del día</h4><button class="btn chico" data-nuevo-menu="refresco">＋ Refresco</button></div>
+        ${refrescos.map(filaMenu).join('') || '<div class="suave">Aún no hay refrescos. Cree el primero.</div>'}
         <div class="fila entre"><h4>📌 Segundos fijos (salen todos los días con menú)</h4><button class="btn chico" data-nuevo-menu="fijo">＋ Fijo</button></div>
         ${fijos.map(filaMenu).join('') || '<div class="suave">Sin segundos fijos.</div>'}
         <div class="fila entre"><h4>🔄 Segundos variables (marque los de este día)</h4><button class="btn chico" data-nuevo-menu="variable">＋ Variable</button></div>
@@ -2495,35 +2498,12 @@ async function adminCarta(cont) {
       </div>
       <div class="tarjeta">
         <div class="fila entre"><h3>🥗 Guarniciones a elección (${delDia.length})</h3></div>
-        <p class="suave peq">Toque para marcar las que se ofrecen este día. Si no marca ninguna, se ofrecen las habituales
-          (${esc(carta.guarniciones.filter((g) => g.activo && g.eleccion_habitual).map((g) => g.nombre).join(', ') || 'ninguna definida: todas')}).</p>
+        <p class="suave peq">Toque para marcar las que se ofrecen este día. Si no marca ninguna, ese día no hay guarnición a elección.</p>
         <div class="opciones">${carta.guarniciones
           .filter((g) => g.activo)
           .map((g) => `<button class="chip ${g.del_dia ? 'activo' : ''}" data-guar="${g.id}" data-v="${g.del_dia ? 0 : 1}">${g.del_dia ? '✓ ' : ''}${esc(g.nombre)}</button>`)
           .join('')}</div>
         <form class="fila" id="form-guar" style="margin-top:10px"><input class="entrada crecer" name="nombre" placeholder="Nueva guarnición…" autocomplete="off"><button class="btn chico">Agregar</button></form>
-      </div>
-      <div class="tarjeta">
-        <div class="fila entre"><h3>⭐ Extras (salen todos los días)</h3><button class="btn chico" id="ver-platos">Editar extras</button></div>
-        ${carta.extras
-          .filter((p) => p.activo)
-          .map(
-            (p) => `<div class="toggle-fila"><div class="crecer"><div class="nombre">${esc(p.nombre)} ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''}</div>
-              <div class="suave peq">${dinero(p.precio)} · ${esc(p.categoria)}</div></div>
-              <button class="btn chico ${p.disponible ? '' : 'ok'}" data-accion="disponible" data-id="${p.id}" data-v="${p.disponible ? 0 : 1}">${p.disponible ? 'Agotar' : 'Hay'}</button></div>`
-          )
-          .join('')}
-      </div>
-      <div class="tarjeta">
-        <div class="fila entre"><h3>🍹 Bebidas (salen todos los días)</h3><button class="btn chico" id="ver-bebidas">Editar bebidas</button></div>
-        ${(carta.bebidas || [])
-          .filter((p) => p.activo)
-          .map(
-            (p) => `<div class="toggle-fila"><div class="crecer"><div class="nombre">${esc(p.nombre)} ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''}</div>
-              <div class="suave peq">${dinero(p.precio)} · ${esc(p.categoria)}</div></div>
-              <button class="btn chico ${p.disponible ? '' : 'ok'}" data-accion="disponible" data-id="${p.id}" data-v="${p.disponible ? 0 : 1}">${p.disponible ? 'Agotar' : 'Hay'}</button></div>`
-          )
-          .join('') || '<div class="suave">Sin bebidas. Agregue desde "Editar bebidas".</div>'}
       </div>
     </div>`;
   const recargar = () => adminCarta(cont);
@@ -2575,7 +2555,7 @@ async function adminCarta(cont) {
     }
   };
   $$('[data-nuevo-menu]', cont).forEach((x) => (x.onclick = () => formularioPlato(null, { tipo: x.dataset.nuevoMenu, fecha })));
-  $$('[data-editar-plato]', cont).forEach((x) => (x.onclick = () => formularioPlato([...menu, ...sopas].find((p) => p.id === Number(x.dataset.editarPlato)))));
+  $$('[data-editar-plato]', cont).forEach((x) => (x.onclick = () => formularioPlato([...menu, ...sopas, ...refrescos].find((p) => p.id === Number(x.dataset.editarPlato)))));
   $('#form-precio-menu', cont).onsubmit = async (e) => {
     e.preventDefault();
     try {
@@ -2586,50 +2566,6 @@ async function adminCarta(cont) {
       toast(err.message, 'error');
     }
   };
-  $('#ver-platos', cont).onclick = () => {
-    S.adminTab = 'platos';
-    S.filtroPlatos = 'extra';
-    vAdmin($('#vista'));
-  };
-  $('#ver-bebidas', cont).onclick = () => {
-    S.adminTab = 'platos';
-    S.filtroPlatos = 'bebidas';
-    vAdmin($('#vista'));
-  };
-}
-
-/** Catálogo de platos */
-async function adminPlatos(cont) {
-  const productos = await api('GET', '/api/productos');
-  const f = S.filtroPlatos;
-  const lista = productos.filter((p) => f === 'todos' || p.tipo === f);
-  cont.innerHTML = `
-    <div class="tarjeta pila">
-      <div class="fila entre envolver"><h3>Platos (${lista.length})</h3><button class="btn chico primario" id="nuevo">＋ Nuevo plato</button></div>
-      ${chips([['todos', 'Todos'], ['menu', 'Menú del día'], ['extra', 'Extras'], ['bebidas', 'Bebidas']], f, 'fp')}
-      <input class="entrada" id="buscar" placeholder="🔎 Buscar…" autocomplete="off">
-      <div class="lista-admin">${
-        lista
-          .map(
-            (p) => `<div class="item" data-buscar="${esc(p.nombre.toLowerCase())}">
-              <div class="crecer"><b>${esc(p.nombre)}</b> <span class="etiqueta">${p.tipo === 'menu' ? `MENÚ · ${ROL_MENU[p.menu_rol].toUpperCase()}` : p.tipo === 'bebidas' ? 'BEBIDA' : 'EXTRA'}</span>
-                ${!p.disponible ? '<span class="etiqueta agotado">AGOTADO</span>' : ''} ${!p.activo ? '<span class="etiqueta">INACTIVO</span>' : ''}
-                <div class="suave peq">${p.tipo === 'menu' ? 'precio del menú' : dinero(p.precio)} · ${esc(p.categoria)}${p.guarnicion_base ? ` · con ${esc(p.guarnicion_base.toLowerCase())}` : ''}${p.con_eleccion ? ' + a elección' : ''}</div></div>
-              <button class="btn chico" data-edit="${p.id}">✏️</button></div>`
-          )
-          .join('') || '<div class="vacio">Sin platos.</div>'
-      }</div>
-    </div>`;
-  enlazarChips(cont, 'fp', (v) => {
-    S.filtroPlatos = v;
-    adminPlatos(cont);
-  });
-  $('#buscar', cont).oninput = (e) => {
-    const q = e.target.value.trim().toLowerCase();
-    $$('.item', cont).forEach((x) => x.classList.toggle('oculto', q && !x.dataset.buscar.includes(q)));
-  };
-  $('#nuevo', cont).onclick = () => formularioPlato(null, { tipo: f === 'extra' ? 'extra' : f === 'bebidas' ? 'bebidas' : 'variable' });
-  $$('[data-edit]', cont).forEach((x) => (x.onclick = () => formularioPlato(productos.find((p) => p.id === Number(x.dataset.edit)))));
 }
 
 async function adminGuarniciones(cont) {
@@ -2642,7 +2578,7 @@ async function adminGuarniciones(cont) {
       <form class="fila" id="form-guar"><input class="entrada crecer" name="nombre" placeholder="Nueva guarnición…" autocomplete="off"><button class="btn primario">Agregar</button></form>
       <div class="lista-admin">${gs
         .map(
-          (g) => `<div class="item"><div class="crecer"><b>${esc(g.nombre)}</b> ${g.eleccion_habitual ? '<span class="etiqueta pagada">A ELECCIÓN</span>' : ''} ${!g.activo ? '<span class="etiqueta">INACTIVA</span>' : ''}</div>
+          (g) => `<div class="item"><div class="crecer"><b>${esc(g.nombre)}</b> ${!g.activo ? '<span class="etiqueta">INACTIVA</span>' : ''}</div>
             <button class="btn chico" data-edit="${g.id}">✏️</button></div>`
         )
         .join('')}</div>
@@ -2666,7 +2602,6 @@ async function adminGuarniciones(cont) {
           titulo: 'Editar guarnición',
           campos: [
             { n: 'nombre', l: 'Nombre', req: true },
-            { n: 'eleccion_habitual', l: 'Ofrecer a elección por defecto', t: 'check', ayuda: 'Se ofrece como guarnición a elección los días en que no se marquen otras.' },
             { n: 'activo', l: 'Activa', t: 'check', def: true },
           ],
           valores: g,
