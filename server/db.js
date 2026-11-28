@@ -388,6 +388,17 @@ tx(() => {
   `);
 });
 
+// ---------- platos para llevar y envase ----------
+// para_llevar: el plato se empaca (en una comanda de mesa puede haber algunos). con_envase: se cobra envase por él.
+// El envase se guarda como una línea más de la comanda (tipo 'envase'), así se cobra, factura y reporta como cualquier ítem.
+{
+  const nueva = !db.prepare('PRAGMA table_info(comanda_items)').all().some((c) => c.name === 'para_llevar');
+  agregarColumna('comanda_items', 'para_llevar', 'INTEGER NOT NULL DEFAULT 0');
+  agregarColumna('comanda_items', 'con_envase', 'INTEGER NOT NULL DEFAULT 0');
+  // comandas para llevar anteriores: todos sus platos eran para llevar (sin envase cobrado)
+  if (nueva) db.exec("UPDATE comanda_items SET para_llevar = 1 WHERE comanda_id IN (SELECT id FROM comandas WHERE tipo = 'llevar')");
+}
+
 // ---------- ingreso con PIN ----------
 // password_hash queda sin uso (antes se ingresaba con contraseña).
 const PIN_INICIAL = '1234';
