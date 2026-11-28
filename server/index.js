@@ -1372,7 +1372,7 @@ app.post(
     const id = Number(req.body?.cobro_id);
     const cobro = cobroVigente(id);
     const datos = documentoESCPOS([comprobante({ cobro, comandas: comandasDeCobro(id), config: CONFIG, cajero: cobro.cajero })], opcionesTicketera());
-    impresora.encolar('comprobante', id, `Comprobante N° ${String(id).padStart(6, '0')}`, datos);
+    impresora.encolar('comprobante', id, `Nota de venta N° ${String(id).padStart(6, '0')}`, datos);
     return { ok: true };
   })
 );
@@ -1502,9 +1502,9 @@ app.get(
   ruta(async (req, res) => {
     const id = Number(req.params.id);
     const cobro = cobroVigente(id);
-    const pdf = await generarPDF([comprobante({ cobro, comandas: comandasDeCobro(id), config: CONFIG, cajero: cobro.cajero })], 'Comprobante de pago');
+    const pdf = await generarPDF([comprobante({ cobro, comandas: comandasDeCobro(id), config: CONFIG, cajero: cobro.cajero })], 'Nota de venta');
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="comprobante-${String(id).padStart(6, '0')}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="nota-de-venta-${String(id).padStart(6, '0')}.pdf"`);
     res.end(pdf);
   })
 );

@@ -1160,7 +1160,7 @@ const ACCIONES = {
   },
   comprobante: (el) =>
     usaTicketeraCaja()
-      ? aTicketera('/api/imprimir/comprobante', { cobro_id: Number(el.dataset.cobro) }, 'Comprobante enviado a la ticketera')
+      ? aTicketera('/api/imprimir/comprobante', { cobro_id: Number(el.dataset.cobro) }, 'Nota de venta enviada a la ticketera')
       : imprimirPDF(`/api/cobros/${el.dataset.cobro}/comprobante.pdf`),
   'imprimir-sunat': (el) => imprimirSunat(Number(el.dataset.id)),
   'ir-comprobantes': () => ir('#/comprobantes'),

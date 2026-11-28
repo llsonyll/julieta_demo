@@ -128,7 +128,7 @@ function ticketCocina(c, momento) {
   return b;
 }
 
-/** Comprobante de pago (interno) para el cliente. Sin cobro = precuenta (antes de pagar). */
+/** Nota de venta (comprobante interno) para el cliente. Sin cobro = precuenta (antes de pagar). Boletas y facturas electrónicas: comprobanteSunat. */
 function comprobante({ cobro, comandas, config, cajero, ahora }) {
   const dinero = (n) => `${config.moneda} ${Number(n || 0).toFixed(2)}`;
   const b = [LOGO ? imagen(LOGO, ANCHO_LOGO) : centro(config.nombreRestaurante, 14, true)];
@@ -136,7 +136,7 @@ function comprobante({ cobro, comandas, config, cajero, ahora }) {
   if (config.direccion) b.push(centro(config.direccion, 9));
   if (config.telefono) b.push(centro(`Tel. ${config.telefono}`, 9));
   const fecha = cobro?.creado_en || ahora;
-  b.push(linea(), centro(cobro ? 'COMPROBANTE DE PAGO' : 'PRECUENTA', 11, true));
+  b.push(linea(), centro(cobro ? 'NOTA DE VENTA' : 'PRECUENTA', 11, true));
   if (cobro) b.push(centro(`N° ${String(cobro.id).padStart(6, '0')}`, 10));
   b.push(centro(`${fecha.slice(0, 10).split('-').reverse().join('/')}  ${fecha.slice(11, 16)}`, 9), linea());
 
