@@ -2738,10 +2738,6 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
     },
     { n: 'con_eleccion', l: 'Lleva una guarnición a elección', t: 'check', def: tipo !== 'bebidas', ayuda: 'Ej: picante de lisas, kapchi… (las que se ofrecen ese día)' },
     { n: 'categoria', l: 'Categoría (para ordenar la carta)', lista: categorias, def: tipo === 'bebidas' ? 'Bebidas' : tipo === 'extra' ? 'Fondos' : 'Menú del día' },
-    { n: 'para_local', l: 'Se sirve en mesa', t: 'check', def: true },
-    { n: 'para_llevar', l: 'Se vende para llevar', t: 'check', def: true },
-    { n: 'disponible', l: 'Hay stock (desmarcar = agotado)', t: 'check', def: true },
-    { n: 'activo', l: 'Activo', t: 'check', def: true },
     { n: 'descripcion', l: 'Descripción (opcional)' },
   ];
   const f = formulario({
@@ -2754,9 +2750,9 @@ async function formularioPlato(p, { tipo, fecha } = {}) {
     },
     eliminar: p
       ? async () => {
-          const r = await api('DELETE', `/api/productos/${p.id}`);
+          await api('DELETE', `/api/productos/${p.id}`);
           cerrarModal();
-          toast(r.desactivado ? 'El plato tiene ventas: se desactivó' : 'Plato eliminado', 'ok');
+          toast('Plato eliminado', 'ok');
         }
       : null,
   });

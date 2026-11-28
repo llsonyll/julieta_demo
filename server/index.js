@@ -600,7 +600,9 @@ app.get(
   })
 );
 
-function validarProducto(b) {
+// previo: el plato que se edita. Disponible, activo y mesa/llevar se manejan desde la carta;
+// si no vienen, se conservan (al crear: todo en 1).
+function validarProducto(b, previo = null) {
   const nombre = texto(b.nombre, 120);
   if (!nombre) fail(400, 'El nombre es obligatorio');
   const tipo = ['menu', 'extra', 'bebidas'].includes(b.tipo) ? b.tipo : fail(400, 'Indique si es menú, extra o bebida');
@@ -622,11 +624,8 @@ function validarProducto(b) {
     menu_rol,
     guarnicion_base_id,
     con_eleccion: sinGuarnicion ? 0 : bool(b.con_eleccion),
-    para_local: b.para_local === undefined ? 1 : bool(b.para_local),
-    para_llevar: b.para_llevar === undefined ? 1 : bool(b.para_llevar),
-    disponible: b.disponible === undefined ? 1 : bool(b.disponible),
-    activo: b.activo === undefined ? 1 : bool(b.activo),
   };
+  for (const k of ['para_local', 'para_llevar', 'disponible', 'activo']) p[k] = b[k] === undefined ? (previo ? previo[k] : 1) : bool(b[k]);
   if (!p.para_local && !p.para_llevar) fail(400, 'Debe estar disponible para mesa y/o para llevar');
   return p;
 }
@@ -655,8 +654,9 @@ app.put(
   rol('admin'),
   ruta((req) => {
     const id = Number(req.params.id);
-    if (!db.prepare('SELECT 1 FROM productos WHERE id = ?').get(id)) fail(404, 'Plato no encontrado');
-    const p = validarProducto(req.body);
+    const previo = db.prepare('SELECT * FROM productos WHERE id = ?').get(id);
+    if (!previo) fail(404, 'Plato no encontrado');
+    const p = validarProducto(req.body, previo);
     db.prepare(`UPDATE productos SET ${COLS_P.split(', ').map((c) => `${c}=?`).join(', ')} WHERE id = ?`).run(...valoresP(p), id);
     emitir('productos');
     return db.prepare(`${SQL_PRODUCTO} WHERE p.id = ?`).get(id);
@@ -681,12 +681,16 @@ app.delete(
   rol('admin'),
   ruta((req) => {
     const id = Number(req.params.id);
-    if (db.prepare('SELECT 1 FROM comanda_items WHERE producto_id = ? LIMIT 1').get(id)) {
-      db.prepare('UPDATE productos SET activo = 0 WHERE id = ?').run(id);
-      emitir('productos');
-      return { ok: true, desactivado: true };
-    }
-    db.prepare('DELETE FROM productos WHERE id = ?').run(id);
+    // las ventas guardan nombre y precio del plato: borrarlo no cambia comandas, cobros ni reportes.
+    // Solo se impide si está en una comanda sin cobrar (al editarla se perdería esa línea).
+    const abierta = db
+      .prepare(
+        `SELECT c.numero_dia FROM comanda_items i JOIN comandas c ON c.id = i.comanda_id
+         WHERE i.producto_id = ? AND c.pagada = 0 AND c.estado <> 'cancelado' LIMIT 1`
+      )
+      .get(id);
+    if (abierta) fail(409, `El plato está en la comanda #${abierta.numero_dia}, que aún no se cobra. Elimínelo cuando se cobre, o márquelo inactivo.`);
+    if (!db.prepare('DELETE FROM productos WHERE id = ?').run(id).changes) fail(404, 'Plato no encontrado');
     emitir('productos');
     return { ok: true };
   })
