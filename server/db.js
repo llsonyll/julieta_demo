@@ -350,6 +350,44 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_comandas_atencion ON comandas(atencion_i
     });
 }
 
+// ---------- cobro por plato y pago mixto ----------
+// cobro_items: qué platos (y cuántas unidades) paga cada cobro; un plato puede repartirse entre varios cobros.
+// cobro_pagos: cómo se pagó (uno o varios métodos). comandas.pagada queda en 1 cuando todos sus platos están cobrados.
+db.exec(`
+CREATE TABLE IF NOT EXISTS cobro_items (
+  cobro_id INTEGER NOT NULL REFERENCES cobros(id) ON DELETE CASCADE,
+  item_id INTEGER NOT NULL REFERENCES comanda_items(id) ON DELETE CASCADE,
+  cantidad INTEGER NOT NULL CHECK (cantidad > 0),
+  PRIMARY KEY (cobro_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cobro_items_item ON cobro_items(item_id);
+CREATE TABLE IF NOT EXISTS cobro_pagos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cobro_id INTEGER NOT NULL REFERENCES cobros(id) ON DELETE CASCADE,
+  metodo TEXT NOT NULL,
+  monto REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cobro_pagos ON cobro_pagos(cobro_id);
+-- unidades cobradas de cada plato (sin cobros anulados)
+CREATE VIEW IF NOT EXISTS item_cobrado AS
+  SELECT ci.item_id, SUM(ci.cantidad) AS cantidad FROM cobro_items ci JOIN cobros co ON co.id = ci.cobro_id AND co.anulado = 0
+  GROUP BY ci.item_id;
+-- importe cobrado de cada comanda
+CREATE VIEW IF NOT EXISTS comanda_cobrado AS
+  SELECT i.comanda_id, ROUND(SUM(ic.cantidad * i.precio), 2) AS importe FROM item_cobrado ic JOIN comanda_items i ON i.id = ic.item_id
+  GROUP BY i.comanda_id;
+`);
+// Cobros anteriores: pagaban comandas completas con un solo método
+tx(() => {
+  db.exec(`
+    INSERT INTO cobro_items (cobro_id, item_id, cantidad)
+      SELECT c.cobro_id, i.id, i.cantidad FROM comandas c JOIN comanda_items i ON i.comanda_id = c.id
+      WHERE c.cobro_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cobro_items ci WHERE ci.cobro_id = c.cobro_id);
+    INSERT INTO cobro_pagos (cobro_id, metodo, monto)
+      SELECT co.id, co.metodo, co.total FROM cobros co WHERE NOT EXISTS (SELECT 1 FROM cobro_pagos p WHERE p.cobro_id = co.id);
+  `);
+});
+
 // ---------- ingreso con PIN ----------
 // password_hash queda sin uso (antes se ingresaba con contraseña).
 const PIN_INICIAL = '1234';

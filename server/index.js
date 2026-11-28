@@ -344,8 +344,8 @@ function listarMesas() {
       `SELECT m.*,
         (SELECT COUNT(*) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
            AND c.estado <> 'cancelado' AND c.pagada = 0) AS comandas_abiertas,
-        (SELECT COALESCE(SUM(c.total),0) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
-           AND c.estado <> 'cancelado' AND c.pagada = 0) AS por_cobrar,
+        (SELECT COALESCE(SUM(c.total - COALESCE(cc.importe, 0)),0) FROM comandas c LEFT JOIN comanda_cobrado cc ON cc.comanda_id = c.id
+           WHERE c.mesa_id = m.id AND c.fecha = ? AND c.estado <> 'cancelado' AND c.pagada = 0) AS por_cobrar,
         (SELECT COUNT(*) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
            AND c.estado NOT IN ('cancelado','entregado') AND c.pagada = 0) AS por_entregar,
         (SELECT MIN(c.creado_en) FROM comandas c WHERE c.mesa_id = m.id AND c.fecha = ?
@@ -803,23 +803,27 @@ const SQL_COMANDA = `
   SELECT c.*, COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero) AS mesa_numero, m.piso AS mesa_piso, u.nombre AS mozo_nombre,
     a.numero_dia AS atencion_numero,
     (SELECT COUNT(*) FROM comandas x WHERE x.atencion_id = c.atencion_id) AS atencion_comandas,
-    (SELECT COALESCE(SUM(x.total), 0) FROM comandas x WHERE x.atencion_id = c.atencion_id AND x.pagada = 0 AND x.estado <> 'cancelado') AS atencion_por_cobrar,
-    co.metodo AS metodo_pago, co.comprobante AS cobro_comprobante,
-    (SELECT s.id FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_id,
-    (SELECT s.serie || '-' || s.numero FROM comprobantes_sunat s WHERE s.cobro_id = c.cobro_id LIMIT 1) AS sunat_numero,
+    (SELECT COALESCE(SUM(x.total - COALESCE(xc.importe, 0)), 0) FROM comandas x LEFT JOIN comanda_cobrado xc ON xc.comanda_id = x.id
+       WHERE x.atencion_id = c.atencion_id AND x.pagada = 0 AND x.estado <> 'cancelado') AS atencion_por_cobrar,
+    COALESCE(cc.importe, 0) AS cobrado,
+    (SELECT group_concat(DISTINCT p.metodo) FROM cobro_pagos p JOIN cobros co ON co.id = p.cobro_id AND co.anulado = 0
+       WHERE p.cobro_id IN (SELECT ci.cobro_id FROM cobro_items ci JOIN comanda_items i ON i.id = ci.item_id WHERE i.comanda_id = c.id)) AS metodo_pago,
     (SELECT h.fecha FROM comanda_historial h WHERE h.comanda_id = c.id AND h.estado = 'enviado_cocina'
        ORDER BY h.id DESC LIMIT 1) AS enviado_en
   FROM comandas c
   LEFT JOIN mesas m ON m.id = c.mesa_id
   LEFT JOIN usuarios u ON u.id = c.mozo_id
   LEFT JOIN atenciones a ON a.id = c.atencion_id
-  LEFT JOIN cobros co ON co.id = c.cobro_id`;
+  LEFT JOIN comanda_cobrado cc ON cc.comanda_id = c.id`;
 
 function adjuntarItems(comandas) {
   if (!comandas.length) return comandas;
   const ids = comandas.map((c) => c.id);
   const items = db
-    .prepare(`SELECT * FROM comanda_items WHERE comanda_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`)
+    .prepare(
+      `SELECT i.*, COALESCE(ic.cantidad, 0) AS cobrado FROM comanda_items i LEFT JOIN item_cobrado ic ON ic.item_id = i.id
+       WHERE i.comanda_id IN (${ids.map(() => '?').join(',')}) ORDER BY i.id`
+    )
     .all(...ids);
   const porComanda = new Map(ids.map((id) => [id, []]));
   for (const it of items) porComanda.get(it.comanda_id).push(it);
@@ -836,6 +840,16 @@ function obtenerComanda(id, conHistorial = false) {
   const [c] = obtenerComandas([id]);
   if (!c) return null;
   if (conHistorial) {
+    c.cobros = db
+      .prepare(
+        `SELECT co.id, co.total, co.metodo, co.comprobante, co.creado_en,
+           (SELECT s.id FROM comprobantes_sunat s WHERE s.cobro_id = co.id LIMIT 1) AS sunat_id,
+           (SELECT s.serie || '-' || s.numero FROM comprobantes_sunat s WHERE s.cobro_id = co.id LIMIT 1) AS sunat_numero
+         FROM cobros co WHERE co.anulado = 0
+           AND co.id IN (SELECT ci.cobro_id FROM cobro_items ci JOIN comanda_items i ON i.id = ci.item_id WHERE i.comanda_id = ?)
+         ORDER BY co.id`
+      )
+      .all(id);
     c.historial = db
       .prepare(
         `SELECT h.estado, h.fecha, u.nombre AS usuario FROM comanda_historial h
@@ -1087,7 +1101,7 @@ app.put(
   rol('admin', 'mozo', 'caja'),
   ruta((req) => {
     const c = comandaVisible(req);
-    if (c.pagada) fail(400, 'La comanda ya está cobrada');
+    if (c.cobrado > 0) fail(400, c.pagada ? 'La comanda ya está cobrada' : 'La comanda tiene platos cobrados: anule ese cobro para editarla');
     const editable = c.estado === 'generado' || (req.user.roles.includes('admin') && !['entregado', 'cancelado'].includes(c.estado));
     if (!editable) fail(400, 'Solo se pueden editar comandas que aún no se enviaron a cocina');
     const cab = validarCabecera(req.body);
@@ -1120,7 +1134,7 @@ app.post(
     if (nuevo === c.estado) return c;
     const permitidos = TRANSICIONES[c.estado]?.[nuevo];
     if (!req.user.roles.includes('admin') && !(permitidos && permitidos.some((r) => req.user.roles.includes(r)))) fail(403, 'No puede hacer ese cambio de estado');
-    if (nuevo === 'cancelado' && c.pagada) fail(400, 'Anule primero el cobro');
+    if (nuevo === 'cancelado' && c.cobrado > 0) fail(400, 'Anule primero el cobro');
     tx(() => {
       registrarEstado(c.id, nuevo, req.user.id);
       actualizarAtencion(c.atencion_id);
@@ -1137,6 +1151,7 @@ app.delete(
   rol('admin'),
   ruta((req) => {
     const c = comandaVisible(req);
+    if (c.cobrado > 0) fail(400, 'Anule primero los cobros de esta comanda');
     tx(() => {
       db.prepare('DELETE FROM comandas WHERE id = ?').run(c.id);
       actualizarAtencion(c.atencion_id);
@@ -1278,6 +1293,49 @@ app.post(
   })
 );
 
+// ---------------- cobro por plato ----------------
+/** Copia de las comandas dejando solo cierta cantidad de cada plato (y el total que corresponde) */
+function soloItems(comandas, cantidadDe) {
+  return comandas
+    .map((c) => {
+      const items = c.items.map((it) => ({ ...it, cantidad: cantidadDe(it) })).filter((it) => it.cantidad > 0);
+      return { ...c, items, total: redondear(items.reduce((s, it) => s + it.precio * it.cantidad, 0)) };
+    })
+    .filter((c) => c.items.length);
+}
+/** Lo que falta cobrar de estas comandas */
+const pendientesDe = (comandas) => soloItems(comandas.filter((c) => c.estado !== 'cancelado' && !c.pagada), (it) => it.cantidad - it.cobrado);
+
+/** Comandas de un cobro, solo con los platos (y cantidades) que pagó ese cobro */
+function comandasDeCobro(cobroId) {
+  const partes = new Map(db.prepare('SELECT item_id, cantidad FROM cobro_items WHERE cobro_id = ?').all(cobroId).map((r) => [r.item_id, r.cantidad]));
+  const ids = db
+    .prepare('SELECT DISTINCT i.comanda_id AS id FROM cobro_items ci JOIN comanda_items i ON i.id = ci.item_id WHERE ci.cobro_id = ?')
+    .all(cobroId)
+    .map((r) => r.id);
+  return soloItems(obtenerComandas(ids), (it) => partes.get(it.id) || 0);
+}
+
+/** Cobro con sus formas de pago; error si no existe o está anulado */
+function cobroVigente(id) {
+  const cobro = db.prepare('SELECT * FROM cobros WHERE id = ?').get(id);
+  if (!cobro) fail(404, 'Cobro no encontrado');
+  if (cobro.anulado) fail(400, 'Este cobro fue anulado');
+  cobro.pagos = db.prepare('SELECT metodo, monto FROM cobro_pagos WHERE cobro_id = ? ORDER BY id').all(id);
+  cobro.cajero = db.prepare('SELECT nombre FROM usuarios WHERE id = ?').get(cobro.usuario_id)?.nombre;
+  return cobro;
+}
+
+/** pagada = todos sus platos cobrados (por uno o varios cobros) */
+function actualizarPagadas(comandaIds) {
+  const upd = db.prepare(
+    `UPDATE comandas SET actualizado_en = ?, pagada = NOT EXISTS (
+       SELECT 1 FROM comanda_items i LEFT JOIN item_cobrado ic ON ic.item_id = i.id
+       WHERE i.comanda_id = comandas.id AND COALESCE(ic.cantidad, 0) < i.cantidad) WHERE id = ?`
+  );
+  for (const id of comandaIds) upd.run(ahora(), id);
+}
+
 // Imprimir (o reimprimir) tickets de cocina en la ticketera. { ids: [comandas] }
 app.post(
   '/api/imprimir/comanda',
@@ -1297,7 +1355,7 @@ app.post(
   rol('admin', 'mozo', 'caja'),
   ruta((req) => {
     exigirTicketera();
-    const comandas = obtenerComandas(listaIds(req.body?.ids)).filter((c) => c.estado !== 'cancelado' && !c.pagada);
+    const comandas = pendientesDe(obtenerComandas(listaIds(req.body?.ids)));
     if (!comandas.length) fail(404, 'No hay consumo pendiente para la precuenta');
     const datos = documentoESCPOS([comprobante({ comandas, config: CONFIG, ahora: ahora() })], opcionesTicketera());
     impresora.encolar('precuenta', comandas[0].id, `Precuenta · ${lugarCorto(comandas[0])}`, datos);
@@ -1312,13 +1370,9 @@ app.post(
   ruta((req) => {
     exigirTicketera();
     const id = Number(req.body?.cobro_id);
-    const cobro = db.prepare('SELECT * FROM cobros WHERE id = ?').get(id);
-    if (!cobro) fail(404, 'Cobro no encontrado');
-    if (cobro.anulado) fail(400, 'Este cobro fue anulado');
-    const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
-    const cajero = db.prepare('SELECT nombre FROM usuarios WHERE id = ?').get(cobro.usuario_id)?.nombre;
-    const datos = documentoESCPOS([comprobante({ cobro, comandas: obtenerComandas(ids), config: CONFIG, cajero })], opcionesTicketera());
-    impresora.encolar('comprobante', id, `Comprobante N° ${String(id).padStart(6, '0')}`, datos);
+    const cobro = cobroVigente(id);
+    const datos = documentoESCPOS([comprobante({ cobro, comandas: comandasDeCobro(id), config: CONFIG, cajero: cobro.cajero })], opcionesTicketera());
+    impresora.encolar('comprobante', id, `Nota de venta N° ${String(id).padStart(6, '0')}`, datos);
     return { ok: true };
   })
 );
@@ -1328,17 +1382,48 @@ app.post(
   '/api/cobros',
   rol('admin', 'caja'),
   ruta((req) => {
-    const ids = listaIds(req.body.comanda_ids);
-    if (!ids.length) fail(400, 'Seleccione qué cobrar');
-    const comandas = obtenerComandas(ids);
-    if (comandas.length !== ids.length) fail(404, 'Comanda no encontrada');
-    for (const c of comandas) {
-      if (c.estado === 'cancelado') fail(400, `La comanda #${c.numero_dia} está cancelada`);
-      if (c.pagada) fail(400, `La comanda #${c.numero_dia} ya fue cobrada`);
+    // Qué se cobra: platos con su cantidad { items: [{ item_id, cantidad }] }, o comandas completas { comanda_ids } (lo que les falte)
+    let pedido = Array.isArray(req.body.items)
+      ? req.body.items.map((x) => ({ item_id: Number(x.item_id), cantidad: Number(x.cantidad) }))
+      : pendientesDe(obtenerComandas(listaIds(req.body.comanda_ids))).flatMap((c) => c.items.map((it) => ({ item_id: it.id, cantidad: it.cantidad })));
+    pedido = pedido.filter((x) => x.cantidad);
+    if (!pedido.length) fail(400, 'Seleccione qué cobrar');
+    if (new Set(pedido.map((x) => x.item_id)).size !== pedido.length) fail(400, 'Hay un plato repetido en el cobro');
+    const getItem = db.prepare(
+      `SELECT i.*, COALESCE(ic.cantidad, 0) AS cobrado, c.estado, c.numero_dia, c.atencion_id, c.mesa_id
+       FROM comanda_items i JOIN comandas c ON c.id = i.comanda_id LEFT JOIN item_cobrado ic ON ic.item_id = i.id WHERE i.id = ?`
+    );
+    const items = pedido.map((x) => {
+      const it = getItem.get(x.item_id);
+      if (!it) fail(404, 'Plato no encontrado');
+      if (it.estado === 'cancelado') fail(400, `La comanda #${it.numero_dia} está cancelada`);
+      const falta = it.cantidad - it.cobrado;
+      if (!Number.isInteger(x.cantidad) || x.cantidad < 0 || x.cantidad > falta)
+        fail(400, falta ? `De "${it.nombre}" (comanda #${it.numero_dia}) solo quedan ${falta} por cobrar` : `"${it.nombre}" (comanda #${it.numero_dia}) ya fue cobrado`);
+      return { ...it, aCobrar: x.cantidad };
+    });
+    const total = redondear(items.reduce((s, it) => s + it.precio * it.aCobrar, 0));
+
+    // Formas de pago: { pagos: [{ metodo, monto }] } (pago mixto) o { metodo } por el total
+    const pagos =
+      Array.isArray(req.body.pagos) && req.body.pagos.length
+        ? req.body.pagos.map((p) => ({ metodo: p.metodo, monto: redondear(Number(p.monto)) }))
+        : [{ metodo: req.body.metodo, monto: total }];
+    for (const p of pagos) {
+      if (!METODOS_PAGO.includes(p.metodo)) fail(400, 'Elija la forma de pago');
+      if (!(p.monto > 0)) fail(400, 'Cada forma de pago debe tener un monto mayor a cero');
     }
-    const metodo = METODOS_PAGO.includes(req.body.metodo) ? req.body.metodo : fail(400, 'Elija la forma de pago');
+    const suma = redondear(pagos.reduce((s, p) => s + p.monto, 0));
+    if (Math.abs(suma - total) >= 0.01) fail(400, `Los pagos suman ${suma.toFixed(2)} y el total es ${total.toFixed(2)}`);
+    const efectivo = redondear(pagos.filter((p) => p.metodo === 'Efectivo').reduce((s, p) => s + p.monto, 0));
+    let recibido = null;
+    if (efectivo && req.body.recibido !== undefined && req.body.recibido !== null && req.body.recibido !== '') {
+      recibido = redondear(Number(req.body.recibido));
+      if (!Number.isFinite(recibido) || recibido < efectivo) fail(400, 'El monto recibido es menor a lo que se paga en efectivo');
+    }
+    const metodo = new Set(pagos.map((p) => p.metodo)).size === 1 ? pagos[0].metodo : 'Mixto';
+
     const tipoComprobante = req.body.comprobante === 'sunat' ? 'sunat' : 'nota';
-    const total = redondear(comandas.reduce((s, c) => s + c.total, 0));
     // boleta/factura ya emitida en SOL: su XML viene con el cobro y se vincula en el mismo paso
     const xmlSunat = tipoComprobante === 'sunat' && req.body.sunat_xml ? leerXMLSubido(req.body.sunat_xml) : null;
     if (xmlSunat) {
@@ -1347,19 +1432,18 @@ app.post(
       if (Math.abs(xmlSunat.d.totales.total - total) >= 0.01 && !req.body.aceptar_diferencia)
         fail(409, `El total de la ${nombreCorto(xmlSunat.d)} (${xmlSunat.d.totales.total.toFixed(2)}) no coincide con el cobro (${total.toFixed(2)})`);
     }
-    let recibido = null;
-    if (metodo === 'Efectivo' && req.body.recibido !== undefined && req.body.recibido !== null && req.body.recibido !== '') {
-      recibido = redondear(Number(req.body.recibido));
-      if (!Number.isFinite(recibido) || recibido < total) fail(400, 'El monto recibido es menor al total');
-    }
+    const comandaIds = [...new Set(items.map((it) => it.comanda_id))];
     const cobroId = tx(() => {
       const id = db
         .prepare('INSERT INTO cobros (fecha, total, metodo, recibido, usuario_id, creado_en, comprobante) VALUES (?,?,?,?,?,?,?)')
         .run(hoy(), total, metodo, recibido, req.user.id, ahora(), tipoComprobante).lastInsertRowid;
-      const upd = db.prepare('UPDATE comandas SET pagada = 1, cobro_id = ?, actualizado_en = ? WHERE id = ?');
-      ids.forEach((cid) => upd.run(id, ahora(), cid));
-      new Set(comandas.map((c) => c.atencion_id)).forEach(actualizarAtencion);
-      new Set(comandas.map((c) => c.mesa_id)).forEach(separarSiLibre);
+      const insItem = db.prepare('INSERT INTO cobro_items (cobro_id, item_id, cantidad) VALUES (?,?,?)');
+      items.forEach((it) => insItem.run(id, it.id, it.aCobrar));
+      const insPago = db.prepare('INSERT INTO cobro_pagos (cobro_id, metodo, monto) VALUES (?,?,?)');
+      pagos.forEach((p) => insPago.run(id, p.metodo, p.monto));
+      actualizarPagadas(comandaIds);
+      new Set(items.map((it) => it.atencion_id)).forEach(actualizarAtencion);
+      new Set(items.map((it) => it.mesa_id)).forEach(separarSiLibre);
       if (xmlSunat) {
         const { comprobante: comp } = sunat.registrar(xmlSunat.d, xmlSunat.xml, req.user.id, ahora());
         sunat.vincular(comp.id, id);
@@ -1367,7 +1451,7 @@ app.post(
       return id;
     });
     emitir('mesas');
-    ids.forEach((cid) => notificarComanda(cid, 'pago'));
+    comandaIds.forEach((cid) => notificarComanda(cid, 'pago'));
     const sunatId = db.prepare('SELECT id FROM comprobantes_sunat WHERE cobro_id = ?').get(cobroId)?.id ?? null;
     return { ...db.prepare('SELECT * FROM cobros WHERE id = ?').get(cobroId), sunat_id: sunatId };
   })
@@ -1380,12 +1464,18 @@ app.post(
     const id = Number(req.params.id);
     const cobro = db.prepare('SELECT * FROM cobros WHERE id = ?').get(id);
     if (!cobro || cobro.anulado) fail(404, 'Cobro no encontrado');
-    const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
+    const cs = db
+      .prepare(
+        `SELECT DISTINCT c.id, c.atencion_id FROM cobro_items ci JOIN comanda_items i ON i.id = ci.item_id
+         JOIN comandas c ON c.id = i.comanda_id WHERE ci.cobro_id = ?`
+      )
+      .all(id);
+    const ids = cs.map((c) => c.id);
     tx(() => {
-      const atenciones = db.prepare('SELECT DISTINCT atencion_id FROM comandas WHERE cobro_id = ?').all(id);
       db.prepare('UPDATE cobros SET anulado = 1 WHERE id = ?').run(id);
-      db.prepare('UPDATE comandas SET pagada = 0, cobro_id = NULL WHERE cobro_id = ?').run(id);
-      atenciones.forEach((r) => actualizarAtencion(r.atencion_id));
+      db.prepare('UPDATE comandas SET cobro_id = NULL WHERE cobro_id = ?').run(id); // columna de la versión anterior
+      actualizarPagadas(ids);
+      new Set(cs.map((c) => c.atencion_id)).forEach(actualizarAtencion);
     });
     ids.forEach((cid) => notificarComanda(cid, 'pago'));
     return { ok: true };
@@ -1397,7 +1487,7 @@ app.get(
   '/api/precuenta.pdf',
   rol('admin', 'mozo', 'caja'),
   ruta(async (req, res) => {
-    const comandas = obtenerComandas(listaIds(req.query.ids)).filter((c) => c.estado !== 'cancelado' && !c.pagada);
+    const comandas = pendientesDe(obtenerComandas(listaIds(req.query.ids)));
     if (!comandas.length) fail(404, 'No hay consumo pendiente para la precuenta');
     const pdf = await generarPDF([comprobante({ comandas, config: CONFIG, ahora: ahora() })], 'Precuenta');
     res.setHeader('Content-Type', 'application/pdf');
@@ -1411,14 +1501,10 @@ app.get(
   rol('admin', 'caja'),
   ruta(async (req, res) => {
     const id = Number(req.params.id);
-    const cobro = db.prepare('SELECT * FROM cobros WHERE id = ?').get(id);
-    if (!cobro) fail(404, 'Cobro no encontrado');
-    if (cobro.anulado) fail(400, 'Este cobro fue anulado');
-    const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(id).map((r) => r.id);
-    const cajero = db.prepare('SELECT nombre FROM usuarios WHERE id = ?').get(cobro.usuario_id)?.nombre;
-    const pdf = await generarPDF([comprobante({ cobro, comandas: obtenerComandas(ids), config: CONFIG, cajero })], 'Comprobante de pago');
+    const cobro = cobroVigente(id);
+    const pdf = await generarPDF([comprobante({ cobro, comandas: comandasDeCobro(id), config: CONFIG, cajero: cobro.cajero })], 'Nota de venta');
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="comprobante-${String(id).padStart(6, '0')}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="nota-de-venta-${String(id).padStart(6, '0')}.pdf"`);
     res.end(pdf);
   })
 );
@@ -1427,10 +1513,10 @@ app.get(
 // Datos de un cobro para listarlo: comandas, mesa o cliente
 const SQL_COBRO = `
   SELECT co.id, co.fecha, co.total, co.metodo, co.comprobante, co.creado_en, co.anulado,
-    (SELECT group_concat('#' || c.numero_dia, ', ') FROM comandas c WHERE c.cobro_id = co.id) AS comandas,
+    (SELECT group_concat('#' || n, ', ') FROM (SELECT DISTINCT c.numero_dia AS n FROM cobro_items ci JOIN comanda_items i ON i.id = ci.item_id JOIN comandas c ON c.id = i.comanda_id WHERE ci.cobro_id = co.id ORDER BY n)) AS comandas,
     (SELECT CASE WHEN c.tipo = 'local' THEN 'Mesa ' || COALESCE(NULLIF(c.mesa_etiqueta, ''), m.numero)
                  ELSE 'Para llevar' || CASE WHEN c.cliente <> '' THEN ' · ' || c.cliente ELSE '' END END
-       FROM comandas c LEFT JOIN mesas m ON m.id = c.mesa_id WHERE c.cobro_id = co.id LIMIT 1) AS lugar
+       FROM cobro_items ci JOIN comanda_items i ON i.id = ci.item_id JOIN comandas c ON c.id = i.comanda_id LEFT JOIN mesas m ON m.id = c.mesa_id WHERE ci.cobro_id = co.id LIMIT 1) AS lugar
   FROM cobros co`;
 
 const qrDe = (d) => sunat.textoQR(d);
@@ -1450,7 +1536,7 @@ app.get(
       .prepare(
         `SELECT s.id, s.cobro_id, s.tipo, s.serie, s.numero, s.fecha, s.hora, s.cliente_tipo_doc, s.cliente_doc, s.cliente_nombre,
            s.total, s.subido_en, co.anulado AS cobro_anulado,
-           (SELECT group_concat('#' || c.numero_dia, ', ') FROM comandas c WHERE c.cobro_id = s.cobro_id) AS comandas
+           (SELECT group_concat('#' || n, ', ') FROM (SELECT DISTINCT c.numero_dia AS n FROM cobro_items ci JOIN comanda_items i ON i.id = ci.item_id JOIN comandas c ON c.id = i.comanda_id WHERE ci.cobro_id = s.cobro_id ORDER BY n)) AS comandas
          FROM comprobantes_sunat s LEFT JOIN cobros co ON co.id = s.cobro_id
          WHERE s.fecha = ? OR substr(s.subido_en, 1, 10) = ? ORDER BY s.id DESC`
       )
@@ -1466,8 +1552,7 @@ app.get(
   ruta((req) => {
     const cobro = db.prepare(`${SQL_COBRO} WHERE co.id = ?`).get(Number(req.params.id));
     if (!cobro) fail(404, 'Cobro no encontrado');
-    const ids = db.prepare('SELECT id FROM comandas WHERE cobro_id = ?').all(cobro.id).map((r) => r.id);
-    return { cobro, comandas: obtenerComandas(ids) };
+    return { cobro, comandas: comandasDeCobro(cobro.id) };
   })
 );
 
@@ -1642,7 +1727,7 @@ app.get(
       .prepare(
         `SELECT COUNT(*) AS comandas,
           COALESCE(SUM(c.total),0) AS total_vendido,
-          COALESCE(SUM(CASE WHEN c.pagada = 1 THEN c.total ELSE 0 END),0) AS total_cobrado,
+          COALESCE(SUM((SELECT cc.importe FROM comanda_cobrado cc WHERE cc.comanda_id = c.id)),0) AS total_cobrado,
           COUNT(DISTINCT c.mesa_id) AS mesas_atendidas,
           COALESCE(SUM(CASE WHEN c.tipo = 'local' THEN 1 ELSE 0 END),0) AS en_mesa,
           COALESCE(SUM(CASE WHEN c.tipo = 'llevar' THEN 1 ELSE 0 END),0) AS para_llevar
@@ -1698,8 +1783,9 @@ app.get(
 
     const pagos = db
       .prepare(
-        `SELECT metodo, COUNT(*) AS cobros, COALESCE(SUM(total),0) AS total
-         FROM cobros WHERE fecha = ? AND anulado = 0 GROUP BY metodo ORDER BY total DESC`
+        `SELECT p.metodo, COUNT(DISTINCT p.cobro_id) AS cobros, COALESCE(SUM(p.monto),0) AS total
+         FROM cobro_pagos p JOIN cobros co ON co.id = p.cobro_id WHERE co.fecha = ? AND co.anulado = 0
+         GROUP BY p.metodo ORDER BY total DESC`
       )
       .all(fecha);
 
